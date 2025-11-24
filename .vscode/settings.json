@@ -1,0 +1,10 @@
+{
+    "files.associations": {
+        "gpio.h": "c",
+        "gpio_etm.h": "c",
+        "task.h": "c",
+        "sdkconfig.h": "c",
+        "rtc_io.h": "c",
+        "esp_sleep.h": "c"
+    }
+}
