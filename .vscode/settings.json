@@ -27,6 +27,8 @@
         "spi_master.h": "c",
         "esp_lcd_panel_ops.h": "c",
         "esp_lcd_st7796.h": "c",
-        "ledc.h": "c"
+        "ledc.h": "c",
+        "esp_timer.h": "c",
+        "ecg.h": "c"
     }
 }

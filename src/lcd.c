@@ -15,6 +15,8 @@ const gpio_num_t LCD_DC_RS_PIN = 7;
 const gpio_num_t LCD_RST_PIN = 15;
 const gpio_num_t LCD_CS_PIN = 16;
 
+#define INCLUDE_LCD 1
+
 #define LCD_H_RES 480
 #define LCD_V_RES 320
 #define LINES_PER_DMA 80
@@ -29,6 +31,10 @@ esp_lcd_panel_handle_t lcd_panel_handle;
 
 spi_host_device_t lcd_host_device;
 void init_lcd() {
+
+    if (!INCLUDE_LCD) {
+        return;
+    }
 
     lcd_host_device = SPI3_HOST;
 
@@ -78,6 +84,10 @@ void init_lcd() {
 }
 
 void show_boot_screen_no_dma() {
+    if (!INCLUDE_LCD) {
+        return;
+    }
+
     // Configure PWM for backlight
     ledc_timer_config_t pwm_timer = {
         .speed_mode = LEDC_HIGH_SPEED_MODE,
@@ -110,6 +120,10 @@ void show_boot_screen_no_dma() {
 }
 
 void show_boot_screen() {
+    if (!INCLUDE_LCD) {
+        return;
+    }
+    
     // --- Configure PWM for backlight ---
     ledc_timer_config_t pwm_timer = {
         .speed_mode = LEDC_HIGH_SPEED_MODE,
@@ -131,8 +145,7 @@ void show_boot_screen() {
     };
     ledc_channel_config(&pwm_channel);
 
-    // --- Prepare DMA-friendly black buffer ---
-    // Buffer size: LINES_PER_DMA × LCD_H_RES
+    // DMA Buffer size = LINES_PER_DMA * LCD_H_RES
     uint16_t black_block[LINES_PER_DMA * LCD_H_RES];
     memset(black_block, 0x00, sizeof(black_block)); // Fill with black pixels
 

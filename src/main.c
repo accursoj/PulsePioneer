@@ -7,19 +7,10 @@
 #include "ecg.h"
 #include "lcd.h"
 
-#define LED_CS_PIN 1
-#define LCD_SDO_PIN 4
-#define LCD_SCK_PIN 5
-#define LCD_SDI_PIN 6
-#define LCD_DC_RS_PIN 7
-#define LCD_RST_PIN 15
-#define LCD_CS_PIN 16
 #define RGB_LED_PIN 38
 #define POWER_PIN GPIO_NUM_3
 
 void init_gpio() {
-
-
     gpio_config_t io_conf = {};
 
     // Configure output pins

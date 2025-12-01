@@ -18,11 +18,17 @@ const gpio_num_t ECG_CSB_PIN = 12;
 const gpio_num_t ECG_ALAB_PIN = 13;
 const gpio_num_t ECG_DRDB_PIN = 14;
 
+#define INCLUDE_ECG 1
+
 #define NUM_BYTES_ECG_SAMPLE 8  // dummy (1) + DATA_STATUS (1) + CH1(3) + CH2(3)
 
 #define ECG_CLOCK_FREQUENCY 4000000
 
-    void write_ecg_data(uint8_t addr, uint8_t data) {
+void write_ecg_data(uint8_t addr, uint8_t data) {
+    if (!INCLUDE_ECG) {
+        return;
+    }
+
     spi_transaction_t transaction = {};
     transaction.flags = SPI_TRANS_USE_TXDATA;
     transaction.length = 16;
@@ -33,6 +39,10 @@ const gpio_num_t ECG_DRDB_PIN = 14;
 }
 
 void init_ecg() {
+    if (!INCLUDE_ECG) {
+        return;
+    }
+
     ecg_host_device = SPI2_HOST;
 
     spi_bus_config_t ecg_bus_config = {};
@@ -72,6 +82,10 @@ void init_ecg() {
 }
 
 void ecg_read_sample(uint8_t *status, int16_t *ch1, int16_t *ch2) {
+    if (!INCLUDE_ECG) {
+        return;
+    }
+
     uint8_t rx_buffer_data[NUM_BYTES_ECG_SAMPLE];
 
     spi_transaction_t transaction = {};
@@ -98,6 +112,10 @@ void ecg_read_sample(uint8_t *status, int16_t *ch1, int16_t *ch2) {
 }
 
 void stream_ecg_data() {
+    if (!INCLUDE_ECG) {
+        return;
+    }
+
     uint8_t status;
     int16_t ch1_raw;
     int16_t ch2_raw;
@@ -125,6 +143,10 @@ void stream_ecg_data() {
 }
 
 void ecg_power_down() {
+    if (!INCLUDE_ECG) {
+        return;
+    }
+    
     ESP_ERROR_CHECK(spi_bus_remove_device(ecg_handle));
     ESP_ERROR_CHECK(spi_bus_free(ecg_host_device));
 }
