@@ -19,6 +19,14 @@
         "lcd_types.h": "c",
         "color_types.h": "c",
         "esp_lcd_panel_vendor.h": "c",
-        "esp_lcd_panel_dev.h": "c"
+        "esp_lcd_panel_dev.h": "c",
+        "spi_types.h": "c",
+        "spi_common.h": "c",
+        "esp_intr_types.h": "c",
+        "stdio.h": "c",
+        "spi_master.h": "c",
+        "esp_lcd_panel_ops.h": "c",
+        "esp_lcd_st7796.h": "c",
+        "ledc.h": "c"
     }
 }
