@@ -6,6 +6,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "driver/ledc.h"
 #include <string.h>
+#include <lvgl.h>
 
 const gpio_num_t LED_CS_PIN = 1;
 const gpio_num_t LCD_SDO_PIN = 4;

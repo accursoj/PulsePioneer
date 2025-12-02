@@ -3,6 +3,7 @@
 #include "driver/gpio.h"
 #include "esp_timer.h"
 #include "esp_err.h"
+#include "lvgl.h"
 
 // ECG SPI device handles
 spi_host_device_t ecg_host_device;

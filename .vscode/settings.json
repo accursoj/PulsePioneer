@@ -29,6 +29,10 @@
         "esp_lcd_st7796.h": "c",
         "ledc.h": "c",
         "esp_timer.h": "c",
-        "ecg.h": "c"
+        "ecg.h": "c",
+        "lv_init.h": "c",
+        "lv_conf_internal.h": "c",
+        "lv_conf.h": "c",
+        "lvgl.h": "c"
     }
 }
