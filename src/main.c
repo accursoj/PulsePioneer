@@ -52,8 +52,9 @@ void start_deep_sleep() {
 void system_boot() {
     start_deep_sleep();
     init_gpio();
-    init_lcd();
     init_ecg();
+    init_lcd();
+    show_boot_screen_lvgl();
 }
 
 void power_down() {
@@ -63,6 +64,7 @@ void power_down() {
 void app_main() {
     system_boot();
     show_boot_screen();
+    show_boot_screen_lvgl();
     // TODO: Check ECG alarms
     stream_ecg_data();
     while(1) {}

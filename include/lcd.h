@@ -16,6 +16,8 @@ void init_lcd(void);
 
 void show_boot_screen_no_dma(void);
 
+void show_boot_screen_lvgl(void);
+
 void show_boot_screen(void);
 
 #endif // LCD_H

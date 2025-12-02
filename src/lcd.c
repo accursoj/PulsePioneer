@@ -7,6 +7,7 @@
 #include "driver/ledc.h"
 #include <string.h>
 #include <lvgl.h>
+#include "esp_timer.h"
 
 const gpio_num_t LED_CS_PIN = 1;
 const gpio_num_t LCD_SDO_PIN = 4;
@@ -82,6 +83,47 @@ void init_lcd() {
     lcd_panel_config.bits_per_pixel = 16;       // RGB565
 
     ESP_ERROR_CHECK(esp_lcd_new_panel_st7796(lcd_io_handle, &lcd_panel_config, &lcd_panel_handle));
+
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(lcd_panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(lcd_panel_handle));
+
+    // ESP_ERROR_CHECK(esp_lcd_panel_invert_color(lcd_panel_handle, false));
+    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(lcd_panel_handle, true));     // required for 480x320
+    // ESP_ERROR_CHECK(esp_lcd_panel_mirror(lcd_panel_handle, false, false));
+}
+
+static uint32_t get_esp_tick(void) {
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *color_map) {
+    int x1 = area->x1;
+    int y1 = area->y1;
+    int x2 = area->x2;
+    int y2 = area->y2;
+
+    // esp_lcd expects width/height as (end_x, end_y), exclusive
+    esp_lcd_panel_draw_bitmap(
+        lcd_panel_handle,
+        x1, y1,
+        x2 + 1, y2 + 1,
+        color_map
+    );
+
+    lv_display_flush_ready(disp);
+}
+
+void init_lvgl() {
+    lv_init();
+    lv_tick_set_cb(get_esp_tick);
+
+    static lv_draw_buf_t buf1[LCD_H_RES * LINES_PER_DMA];
+
+    lv_display_t *disp = lv_display_create(LCD_H_RES, LCD_V_RES);
+
+    lv_display_set_flush_cb(disp, lvgl_flush_cb);
+
+    lv_display_set_draw_buffers(disp, buf1, NULL);
 }
 
 void show_boot_screen_no_dma() {
@@ -118,6 +160,65 @@ void show_boot_screen_no_dma() {
     for (int y = 0; y < LCD_V_RES; y++) {
         esp_lcd_panel_draw_bitmap(lcd_panel_handle, 0, y, LCD_H_RES, y + 1, black_line);
     }
+}
+
+static lv_style_t *create_black_boot_style(void) {
+    static lv_style_t style;
+    static bool initialized = false;
+
+    if (!initialized) {
+        lv_style_init(&style);
+        lv_style_set_bg_color(&style, lv_color_black());
+        lv_style_set_bg_opa(&style, LV_OPA_COVER);
+        initialized = true;
+    }
+    return &style;
+}
+
+void show_boot_screen_lvgl() {
+    if (!INCLUDE_LCD) {
+        return;
+    }
+
+    // Configure PWM for backlight
+    ledc_timer_config_t pwm_timer = {};
+    pwm_timer.speed_mode = LEDC_HIGH_SPEED_MODE;
+    pwm_timer.timer_num = LEDC_TIMER_0;
+    pwm_timer.duty_resolution = BACKLIGHT_PWM_RES;
+    pwm_timer.freq_hz = BACKLIGHT_PWM_FREQ;
+    pwm_timer.clk_cfg = LEDC_AUTO_CLK;
+
+    ledc_timer_config(&pwm_timer);
+
+    ledc_channel_config_t pwm_channel = {};
+    pwm_channel.gpio_num = LED_CS_PIN;
+    pwm_channel.speed_mode = LEDC_HIGH_SPEED_MODE;
+    pwm_channel.channel = LEDC_CHANNEL_0;
+    pwm_channel.intr_type = LEDC_INTR_DISABLE;
+    pwm_channel.timer_sel = LEDC_TIMER_0;
+    pwm_channel.duty = BACKLIGHT_DUTY;
+    pwm_channel.hpoint = 0;
+
+    ledc_channel_config(&pwm_channel);
+
+    // Create boot screen using LVGL obejcts
+    lv_obj_t *screen = lv_obj_create(NULL);            // Create a blank LVGL screen
+    lv_obj_remove_style_all(screen);                   // Remove default white styling
+    lv_obj_add_style(screen, create_black_boot_style(), 0);
+
+    // Create "booting..." text
+    lv_obj_t *label = lv_label_create(screen);
+    lv_label_set_text(label, "Booting Pulse Pioneer...");
+
+    lv_obj_set_style_text_color(label, lv_color_white(), 0);
+    lv_obj_set_style_text_font(label, LV_FONT_DEFAULT, 0);
+    lv_obj_center(label);
+
+    lv_scr_load(screen);                            // Load as the active screen
+
+    // Force LVGL to update immediately
+    lv_timer_handler();                             
+    lv_timer_handler();                             // Call twice to ensure full flush
 }
 
 void show_boot_screen() {

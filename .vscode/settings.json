@@ -33,6 +33,8 @@
         "lv_init.h": "c",
         "lv_conf_internal.h": "c",
         "lv_conf.h": "c",
-        "lvgl.h": "c"
+        "lvgl.h": "c",
+        "lv_version.h": "c",
+        "lv_mem.h": "c"
     }
 }
