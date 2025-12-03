@@ -25,7 +25,7 @@ const gpio_num_t LCD_CS_PIN = 16;
 #define PIXEL_CLK_FREQ 20000000
 #define TRANS_QUEUE_DEPTH 10
 
-#define BACKLIGHT_PWM_FREQ  5000    // 5 kHz
+#define BACKLIGHT_PWM_FREQ  1000    // 5 kHz
 #define BACKLIGHT_PWM_RES   LEDC_TIMER_13_BIT
 #define BACKLIGHT_DUTY      8192    // Adjust duty (0-8191 for 13-bit resolution)
 
