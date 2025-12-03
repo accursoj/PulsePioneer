@@ -9,6 +9,7 @@
 spi_host_device_t ecg_host_device;
 spi_device_handle_t ecg_handle;
 
+// Queue for all ECG samples to be processed
 QueueHandle_t ecg_sample_queue;
 
 // GPIO for DRDY pin
