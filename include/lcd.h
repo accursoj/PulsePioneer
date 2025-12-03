@@ -20,4 +20,6 @@ void show_boot_screen_lvgl(void);
 
 void show_boot_screen(void);
 
+void show_ecg_error_messsage(const char *text);
+
 #endif // LCD_H

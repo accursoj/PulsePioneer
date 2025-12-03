@@ -251,7 +251,7 @@ void show_boot_screen() {
     uint16_t black_block[LINES_PER_DMA * LCD_H_RES];
     memset(black_block, 0x00, sizeof(black_block)); // Fill with black pixels
 
-    // --- Send black pixels in chunks of LINES_PER_DMA ---
+    // Send black pixels in chunks of LINES_PER_DMA
     for (int y = 0; y < LCD_V_RES; y += LINES_PER_DMA) {
         int lines_to_draw = LINES_PER_DMA;
         if (y + LINES_PER_DMA > LCD_V_RES) {
@@ -267,3 +267,62 @@ void show_boot_screen() {
     }
 }
 
+typedef struct {
+    lv_obj_t *chart;
+    lv_chart_series_t *ch1;
+    // lv_chart_series_t *ch2;
+    // lv_chart_series_t *ch3;
+} lv_waveform_t;
+lv_waveform_t *waveform;
+
+lv_waveform_t* update_waveform_plot(int32_t *new_data, uint16_t new_data_size) {
+    lv_obj_t *chart = waveform->chart;
+
+    uint16_t i;
+    for (i = 0; i < new_data_size; i++) {
+        lv_chart_set_next_value(chart, waveform->ch1, *(new_data + i));
+    }
+
+    lv_chart_refresh(chart);
+
+    waveform->chart = chart;        // update waveform struct
+
+    lv_timer_handler();     // update active screen
+
+    return waveform;
+}
+
+lv_waveform_t *create_waveform_plot(void) {
+    // Remove all child objects from the active screen
+    lv_obj_clean(lv_screen_active());
+
+    // Initialize chart object
+    lv_obj_t *chart;
+    chart = lv_chart_create(lv_screen_active());
+    lv_obj_set_size(chart, 480, 300);
+    lv_obj_center(chart);
+    lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
+    
+    lv_chart_series_t *ch1 = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_YELLOW), LV_CHART_AXIS_PRIMARY_Y);
+    
+    lv_chart_refresh(chart);
+
+    waveform->chart = chart;
+    waveform->ch1 = ch1;
+    
+    lv_timer_handler();     // update active screen
+
+    return waveform;
+}
+
+void show_ecg_error_message(const char *text) {
+    if (!INCLUDE_LCD) {
+        return;
+    }
+
+    lv_obj_t *error_box;
+    error_box = lv_msgbox_create(lv_screen_active());
+    error_box = lv_msgbox_add_text(error_box, text);
+
+    lv_timer_handler();     // update active screen
+}
