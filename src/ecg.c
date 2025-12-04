@@ -20,7 +20,7 @@ const gpio_num_t ECG_CSB_PIN = 12;
 const gpio_num_t ECG_ALAB_PIN = 13;
 const gpio_num_t ECG_DRDB_PIN = 14;
 
-#define INCLUDE_ECG 1
+#define INCLUDE_ECG 0
 
 #define NUM_BYTES_ECG_SAMPLE 8  // dummy (1) + DATA_STATUS (1) + CH1(3) + CH2(3)
 

@@ -17,7 +17,7 @@ const gpio_num_t LCD_DC_RS_PIN = 7;
 const gpio_num_t LCD_RST_PIN = 15;
 const gpio_num_t LCD_CS_PIN = 16;
 
-#define INCLUDE_LCD 1
+#define INCLUDE_LCD 0
 
 #define LCD_H_RES 480
 #define LCD_V_RES 320
@@ -133,7 +133,7 @@ void show_boot_screen_no_dma() {
 
     // Configure PWM for backlight
     ledc_timer_config_t pwm_timer = {
-        .speed_mode = LEDC_HIGH_SPEED_MODE,
+        .speed_mode = LEDC_SPEED_MODE_MAX,
         .timer_num = LEDC_TIMER_0,
         .duty_resolution = BACKLIGHT_PWM_RES,
         .freq_hz = BACKLIGHT_PWM_FREQ,
@@ -143,7 +143,7 @@ void show_boot_screen_no_dma() {
 
     ledc_channel_config_t pwm_channel = {
         .gpio_num = LED_CS_PIN,
-        .speed_mode = LEDC_HIGH_SPEED_MODE,
+        .speed_mode = LEDC_SPEED_MODE_MAX,
         .channel = LEDC_CHANNEL_0,
         .intr_type = LEDC_INTR_DISABLE,
         .timer_sel = LEDC_TIMER_0,
@@ -182,8 +182,8 @@ void show_boot_screen_lvgl() {
 
     // Configure PWM for backlight
     ledc_timer_config_t pwm_timer = {};
-    pwm_timer.speed_mode = LEDC_HIGH_SPEED_MODE;
-    pwm_timer.timer_num = LEDC_TIMER_0;
+    pwm_timer.speed_mode = LEDC_SPEED_MODE_MAX;
+    pwm_timer.timer_num = LEDC_TIMER_1;
     pwm_timer.duty_resolution = BACKLIGHT_PWM_RES;
     pwm_timer.freq_hz = BACKLIGHT_PWM_FREQ;
     pwm_timer.clk_cfg = LEDC_AUTO_CLK;
@@ -192,10 +192,10 @@ void show_boot_screen_lvgl() {
 
     ledc_channel_config_t pwm_channel = {};
     pwm_channel.gpio_num = LED_CS_PIN;
-    pwm_channel.speed_mode = LEDC_HIGH_SPEED_MODE;
-    pwm_channel.channel = LEDC_CHANNEL_0;
+    pwm_channel.speed_mode = LEDC_SPEED_MODE_MAX;
+    pwm_channel.channel = LEDC_CHANNEL_1;
     pwm_channel.intr_type = LEDC_INTR_DISABLE;
-    pwm_channel.timer_sel = LEDC_TIMER_0;
+    pwm_channel.timer_sel = LEDC_TIMER_1;
     pwm_channel.duty = BACKLIGHT_DUTY;
     pwm_channel.hpoint = 0;
 
@@ -228,7 +228,7 @@ void show_boot_screen() {
     
     // --- Configure PWM for backlight ---
     ledc_timer_config_t pwm_timer = {
-        .speed_mode = LEDC_HIGH_SPEED_MODE,
+        .speed_mode = LEDC_SPEED_MODE_MAX,
         .timer_num = LEDC_TIMER_0,
         .duty_resolution = BACKLIGHT_PWM_RES,
         .freq_hz = BACKLIGHT_PWM_FREQ,
@@ -238,7 +238,7 @@ void show_boot_screen() {
 
     ledc_channel_config_t pwm_channel = {
         .gpio_num = LED_CS_PIN,
-        .speed_mode = LEDC_HIGH_SPEED_MODE,
+        .speed_mode = LEDC_SPEED_MODE_MAX,
         .channel = LEDC_CHANNEL_0,
         .intr_type = LEDC_INTR_DISABLE,
         .timer_sel = LEDC_TIMER_0,
