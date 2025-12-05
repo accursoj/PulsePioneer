@@ -40,6 +40,30 @@ void write_ecg_data(uint8_t addr, uint8_t data) {
     ESP_ERROR_CHECK(spi_device_transmit(ecg_handle, &transaction));
 }
 
+void read_register(uint8_t reg_address) {
+    // uint8_t rx_buffer_data[NUM_BYTES_ECG_SAMPLE] = {0};
+    // uint8_t tx_buffer_data[NUM_BYTES_ECG_SAMPLE] = {(0b10000000 | reg_address), 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
+    uint8_t tx_buffer_data[2] = {(0x80 | reg_address), 0x00};
+    uint8_t rx_buffer_data[3] = {0};
+
+    spi_transaction_t transaction = {};
+    transaction.flags = 0;
+    transaction.length = 3 * 8;
+
+    transaction.tx_buffer = tx_buffer_data;
+    transaction.rx_buffer = rx_buffer_data;
+
+    ESP_ERROR_CHECK(spi_device_transmit(ecg_handle, &transaction));
+
+    uint16_t i;
+    for (i = 0; i < sizeof(rx_buffer_data); i++) {
+        printf("\n%#08x[%d]: %#08x\n", reg_address, i, rx_buffer_data[i]);
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
+
+}
+
 void init_ecg() {
     if (!INCLUDE_ECG) {
         return;
@@ -64,6 +88,7 @@ void init_ecg() {
     ecg_interface_config.dummy_bits = 0;
     ecg_interface_config.mode = 0; // CPOL=0, CPHA=0
     ecg_interface_config.clock_speed_hz = ECG_CLOCK_FREQUENCY;
+    ecg_interface_config.spics_io_num = ECG_CSB_PIN;
     ecg_interface_config.queue_size = 1;
 
     ESP_ERROR_CHECK(spi_bus_add_device(ecg_host_device, &ecg_interface_config, &ecg_handle));
@@ -81,6 +106,9 @@ void init_ecg() {
     write_ecg_data(0x23, 0x02);
     write_ecg_data(0x27, 0x08);
     write_ecg_data(0x2F, 0x30);
+
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    read_register(0x12);
 }
 
 void ecg_read_sample(uint8_t *status, int16_t *ch1, int16_t *ch2) {
@@ -89,17 +117,28 @@ void ecg_read_sample(uint8_t *status, int16_t *ch1, int16_t *ch2) {
     }
 
     uint8_t rx_buffer_data[NUM_BYTES_ECG_SAMPLE];
+    uint8_t tx_buffer_data[NUM_BYTES_ECG_SAMPLE] = {0xD0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    // uint8_t rx_buffer_data[2] = {0};
+    // uint8_t tx_buffer_data[2] = {0x20 | 0x00, 0x00};
 
     spi_transaction_t transaction = {};
-    transaction.flags = SPI_TRANS_USE_TXDATA | SPI_TRANS_CS_KEEP_ACTIVE;
+    transaction.flags = 0;  //SPI_TRANS_CS_KEEP_ACTIVE;
     transaction.length = NUM_BYTES_ECG_SAMPLE * 8;
-    transaction.tx_data[0] = 0xD0; // start read
-    transaction.tx_data[1] = 0x00;
-    transaction.tx_data[2] = 0x00;
-    transaction.tx_data[3] = 0x00;
+    // transaction.tx_data[0] = 0xD0; // start read
+    // transaction.tx_data[1] = 0x00;
+    // transaction.tx_data[2] = 0x00;
+    // transaction.tx_data[3] = 0x00;
+    transaction.tx_buffer = tx_buffer_data;
     transaction.rx_buffer = rx_buffer_data;
 
+    if (ecg_handle == NULL) {       // debug
+        printf("handle not initialized");
+        vTaskDelay(1 / portTICK_PERIOD_MS);
+    }
+
     ESP_ERROR_CHECK(spi_device_transmit(ecg_handle, &transaction));
+
+    // printf("ID reg: 0x%02X\n", rx_buffer_data[1]);
 
     *status = rx_buffer_data[1];
 
@@ -113,6 +152,31 @@ void ecg_read_sample(uint8_t *status, int16_t *ch1, int16_t *ch2) {
     *ch2 = (int16_t)(ch2_raw >> 8);
 }
 
+void read_alarm_error() {
+    uint8_t rx_buffer_data[NUM_BYTES_ECG_SAMPLE] = {0};
+    uint8_t tx_buffer_data[NUM_BYTES_ECG_SAMPLE] = {(0b10000000 | 0x19), 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
+    spi_transaction_t transaction = {};
+    transaction.flags = 0;
+    transaction.length = NUM_BYTES_ECG_SAMPLE * 8;
+
+    transaction.tx_buffer = tx_buffer_data;
+    transaction.rx_buffer = rx_buffer_data;
+
+    ESP_ERROR_CHECK(spi_device_transmit(ecg_handle, &transaction));
+
+    // uint8_t alarm = rx_buffer_data[1];
+    // if (alarm & (0x1 << 0)) printf("CMOR\n");
+    // if (alarm & (0x1 << 1)) printf("RLDRAIL\n");
+    // if (alarm & (0x1 << 2)) printf("BATLOW\n");
+    // if (alarm & (0x1 << 3)) printf("LEADOFF\n");
+    // if (alarm & (0x1 << 4)) printf("CH1ERR\n");
+    // if (alarm & (0x1 << 5)) printf("CH2ERR\n");
+    // if (alarm & (0x1 << 6)) printf("CH3ERR\n");
+    // if (alarm & (0x1 << 7)) printf("SYNCEDGEERR\n");
+    vTaskDelay(1 / portTICK_PERIOD_MS);
+}
+
 void stream_ecg_data() {
     if (!INCLUDE_ECG) {
         return;
@@ -122,7 +186,7 @@ void stream_ecg_data() {
     int16_t ch1_raw;
     int16_t ch2_raw;
 
-    ecg_sample_queue = xQueueCreate(256, sizeof(ecg_sample_t));
+    // ecg_sample_queue = xQueueCreate(256, sizeof(ecg_sample_t));
     write_ecg_data(0x2F, 0x31); // enable CH2, CH1, DATA_STATUS
     write_ecg_data(0x00, 0x01); // start conversion
 
@@ -137,10 +201,20 @@ void stream_ecg_data() {
             sample.ch2 = ch2_raw;
             sample.ch3 = sample.ch1 - sample.ch2;
 
-            if (xQueueSend(ecg_sample_queue, &sample, 0) != pdTRUE) {
-                return;
+            // if (xQueueSend(ecg_sample_queue, &sample, 0) != pdTRUE) {
+            //     return;
+            // }
+            if (gpio_get_level(ECG_ALAB_PIN) == 0) {
+                read_alarm_error();
             }
+            if (sample.data_status != 0) {
+                printf("\n%ld\n%#04x\nCH1:%d\nCH2:%d\nCH3:%d\n", sample.timestamp_us, sample.data_status, sample.ch1, sample.ch2, sample.ch3);
+                vTaskDelay(1 / portTICK_PERIOD_MS);
+            }
+        } else {
+            // printf("\nNo data ready.\n");
         }
+        vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
 

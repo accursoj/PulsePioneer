@@ -20,13 +20,13 @@ void init_gpio() {
 
     // Configure output pins
     io_conf.pin_bit_mask = ((1ULL << LED_CS_PIN) |
-                              (1ULL << LCD_SDO_PIN) |
+                              (1ULL << LCD_SDI_PIN) |
                               (1ULL << LCD_SCK_PIN) |
                               (1ULL << LCD_DC_RS_PIN) |
                               (1ULL << LCD_RST_PIN) |
                               (1ULL << LCD_CS_PIN) |
                               (1ULL << ECG_SCLK_PIN) |
-                              (1ULL << ECG_SDO_PIN) |
+                              (1ULL << ECG_SDI_PIN) |
                               (1ULL << ECG_CSB_PIN) |
                               (1ULL << RGB_LED_PIN));
     io_conf.mode = GPIO_MODE_OUTPUT;
@@ -36,8 +36,8 @@ void init_gpio() {
     ESP_ERROR_CHECK(gpio_config(&io_conf));
 
     // Configure input pins
-    io_conf.pin_bit_mask = ((1ULL << LCD_SDI_PIN) |
-                            (1ULL << ECG_SDI_PIN) |
+    io_conf.pin_bit_mask = ((1ULL << LCD_SDO_PIN) |
+                            (1ULL << ECG_SDO_PIN) |
                             (1ULL << ECG_ALAB_PIN) |
                             (1ULL << ECG_DRDB_PIN));
     io_conf.mode = GPIO_MODE_INPUT;
@@ -60,8 +60,8 @@ void start_deep_sleep() {
     }
 }
 
-led_strip_handle_t init_rgb_indicator(void) {
-    led_strip_handle_t board_led_handle = NULL;
+static led_strip_handle_t board_led_handle;
+void init_rgb_indicator(void) {
     
     led_strip_config_t strip_config = {};
     strip_config.strip_gpio_num = RGB_LED_PIN;
@@ -75,10 +75,10 @@ led_strip_handle_t init_rgb_indicator(void) {
 
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &strip_rmt_config, &board_led_handle));
 
-    return board_led_handle;
+    // return board_led_handle;
 }
 
-void show_rgb_led(led_strip_handle_t board_led_handle, uint32_t color_r, uint32_t color_g, uint32_t color_b, uint32_t brightness) {
+void show_rgb_led(uint32_t color_r, uint32_t color_g, uint32_t color_b, uint32_t brightness) {
     ESP_ERROR_CHECK(led_strip_set_pixel(
         board_led_handle,
         (0*brightness)/255,
@@ -91,22 +91,21 @@ void show_rgb_led(led_strip_handle_t board_led_handle, uint32_t color_r, uint32_
 
 void system_boot() {
     init_gpio();
-    led_strip_handle_t board_led_handle = init_rgb_indicator();
-    show_rgb_led(board_led_handle, 255, 255, 0, LED_BRIGHTNESS);        // yellow
+    init_rgb_indicator();
+    show_rgb_led(255, 255, 0, LED_BRIGHTNESS);        // yellow
     vTaskDelay(1000 / portTICK_PERIOD_MS);              // pause for one second
 
-    esp_sleep_wakeup_cause_t deep_wakeup_cause = esp_sleep_get_wakeup_cause();
-    if (deep_wakeup_cause != ESP_SLEEP_WAKEUP_EXT0) {
-        start_deep_sleep();
-    }
-    show_rgb_led(board_led_handle, 0, 255, 0,LED_BRIGHTNESS);
+    // esp_sleep_wakeup_cause_t deep_wakeup_cause = esp_sleep_get_wakeup_cause();
+    // if (deep_wakeup_cause != ESP_SLEEP_WAKEUP_EXT0) {
+    //     start_deep_sleep();
+    // }
     init_ecg();
     init_lcd();
     // show_boot_screen_no_dma();
-    // show_boot_screen();
-    show_boot_screen_lvgl();
+    show_boot_screen();
+    // show_boot_screen_lvgl();
+    show_rgb_led(0, 255, 0, LED_BRIGHTNESS);        // green
 }
-
 
 void power_down() {
     ecg_power_down();
@@ -116,7 +115,10 @@ void app_main() {
     system_boot();
     // TODO: Check ECG alarms
     stream_ecg_data();
+    show_rgb_led(0, 0, 255, LED_BRIGHTNESS);        // blue
 
-    while (1){}
+    while (1) {
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    };
     power_down();
 }
