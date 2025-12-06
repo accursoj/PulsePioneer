@@ -31,17 +31,18 @@ void init_gpio() {
                               (1ULL << RGB_LED_PIN));
     io_conf.mode = GPIO_MODE_OUTPUT;
     io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
-    io_conf.pull_down_en = 0;
+    io_conf.pull_down_en = GPIO_PULLUP_DISABLE;
     io_conf.intr_type = GPIO_INTR_DISABLE;
     ESP_ERROR_CHECK(gpio_config(&io_conf));
-
+    
     // Configure input pins
     io_conf.pin_bit_mask = ((1ULL << LCD_SDO_PIN) |
                             (1ULL << ECG_SDO_PIN) |
                             (1ULL << ECG_ALAB_PIN) |
                             (1ULL << ECG_DRDB_PIN));
     io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pull_up_en = 1;
+    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
     io_conf.intr_type = GPIO_INTR_POSEDGE;
     ESP_ERROR_CHECK(gpio_config(&io_conf));
 
@@ -51,6 +52,7 @@ void init_gpio() {
     ESP_ERROR_CHECK(rtc_gpio_pullup_en(POWER_PIN));
     ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(POWER_PIN));
 }
+
 
 void start_deep_sleep() {
     if (esp_sleep_is_valid_wakeup_gpio(POWER_PIN))      // check if GPIO3 can enable ext0 wakeup
@@ -102,7 +104,6 @@ void system_boot() {
     init_ecg();
     init_lcd();
     // show_boot_screen_no_dma();
-    show_boot_screen();
     // show_boot_screen_lvgl();
     show_rgb_led(0, 255, 0, LED_BRIGHTNESS);        // green
 }
@@ -115,7 +116,11 @@ void app_main() {
     system_boot();
     // TODO: Check ECG alarms
     stream_ecg_data();
-    show_rgb_led(0, 0, 255, LED_BRIGHTNESS);        // blue
+    // run_display_test();
+
+    xTaskCreate(lvgl_task, "lvgl_task", 4096, NULL, 1, NULL);
+
+    show_rgb_led(0, 0, 255, LED_BRIGHTNESS); // blue
 
     while (1) {
         vTaskDelay(10 / portTICK_PERIOD_MS);

@@ -1,9 +1,9 @@
 #include "lcd.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
-#include "esp_lcd_io_spi.h"
-#include "esp_lcd_st7796.h"
-#include "esp_lcd_panel_ops.h"
+// #include "esp_lcd_io_spi.h"
+// #include "esp_lcd_st7796.h"
+// #include "esp_lcd_panel_ops.h"
 #include "driver/ledc.h"
 #include <string.h>
 #include <lvgl.h>
@@ -21,7 +21,7 @@ const gpio_num_t LCD_CS_PIN = 16;
 
 #define LCD_H_RES 480
 #define LCD_V_RES 320
-#define LINES_PER_DMA 80
+#define LINES_PER_DMA 40
 #define PIXEL_CLK_FREQ 20 * 1000 * 1000
 #define TRANS_QUEUE_DEPTH 10
 
@@ -29,14 +29,30 @@ const gpio_num_t LCD_CS_PIN = 16;
 #define BACKLIGHT_PWM_RES   LEDC_TIMER_13_BIT
 #define BACKLIGHT_DUTY      4096    // Adjust duty (0-8191 for 13-bit resolution)
 
-esp_lcd_panel_handle_t lcd_panel_handle;
+static spi_device_handle_t lcd_spi_handle;
+// static esp_lcd_panel_handle_t lcd_panel_handle;
+static spi_host_device_t lcd_host_device;
 
-spi_host_device_t lcd_host_device;
+void lcd_reset() {
+    gpio_set_level(LCD_RST_PIN, 0);     // reset with enable-low
+    vTaskDelay(pdMS_TO_TICKS(20));
+    gpio_set_level(LCD_RST_PIN, 1);     // disable
+    vTaskDelay(pdMS_TO_TICKS(150));
+}
+
+void lvgl_timer_cb(void *arg) {
+    lv_timer_handler();
+    vTaskDelay(pdMS_TO_TICKS(10));
+}
+
 void init_lcd() {
 
     if (!INCLUDE_LCD) {
         return;
     }
+
+    gpio_set_level(LCD_CS_PIN, 1);
+    gpio_set_level(LCD_DC_RS_PIN, 1);
 
     lcd_host_device = SPI3_HOST;
 
@@ -44,7 +60,7 @@ void init_lcd() {
     lcd_bus_config.mosi_io_num = LCD_SDI_PIN;
     lcd_bus_config.miso_io_num = LCD_SDO_PIN;
     lcd_bus_config.sclk_io_num = LCD_SCK_PIN;
-    lcd_bus_config.max_transfer_sz = LCD_H_RES * LINES_PER_DMA * sizeof(uint16_t);
+    lcd_bus_config.max_transfer_sz = LCD_H_RES * LCD_V_RES * 2; // LCD_H_RES * LINES_PER_DMA * sizeof(uint16_t);
 
     // Not used
     lcd_bus_config.quadwp_io_num = -1;
@@ -55,42 +71,170 @@ void init_lcd() {
     lcd_bus_config.data7_io_num = -1;
 
     // Defaults
-    lcd_bus_config.data_io_default_level = 0;
-    lcd_bus_config.flags = 0;
-    lcd_bus_config.isr_cpu_id = 0;
-    lcd_bus_config.intr_flags = 0;
+    // lcd_bus_config.data_io_default_level = 0;
+    // lcd_bus_config.flags = 0;
+    // lcd_bus_config.isr_cpu_id = 0;
+    // lcd_bus_config.intr_flags = 0;
 
     spi_dma_chan_t lcd_dma_chan = SPI_DMA_CH_AUTO;
 
     ESP_ERROR_CHECK(spi_bus_initialize(lcd_host_device, &lcd_bus_config, lcd_dma_chan));
-
-    esp_lcd_panel_io_handle_t lcd_io_handle = NULL;
-    esp_lcd_panel_io_spi_config_t lcd_io_config = {};
-    lcd_io_config.dc_gpio_num = LCD_DC_RS_PIN;
-    lcd_io_config.cs_gpio_num = LCD_CS_PIN;//    -1; // operate the bus exclusively
-    lcd_io_config.pclk_hz = PIXEL_CLK_FREQ;
-    lcd_io_config.spi_mode = 3;
-    lcd_io_config.lcd_cmd_bits = 8;
-    lcd_io_config.lcd_param_bits = 8;
-    lcd_io_config.trans_queue_depth = TRANS_QUEUE_DEPTH;
-
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)lcd_host_device, &lcd_io_config, &lcd_io_handle));
-
-    // lcd_panel_handle = NULL;
-    esp_lcd_panel_dev_config_t lcd_panel_config = {};
-    lcd_panel_config.reset_gpio_num = LCD_RST_PIN;
-    lcd_panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
-    lcd_panel_config.bits_per_pixel = 16;       // RGB565
-
-    ESP_ERROR_CHECK(esp_lcd_new_panel_st7796(lcd_io_handle, &lcd_panel_config, &lcd_panel_handle));
-
-    ESP_ERROR_CHECK(esp_lcd_panel_reset(lcd_panel_handle));
     vTaskDelay(50 / portTICK_PERIOD_MS);
-    ESP_ERROR_CHECK(esp_lcd_panel_init(lcd_panel_handle));
 
-    // ESP_ERROR_CHECK(esp_lcd_panel_invert_color(lcd_panel_handle, false));
-    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(lcd_panel_handle, true));     // required for 480x320
-    // ESP_ERROR_CHECK(esp_lcd_panel_mirror(lcd_panel_handle, false, false));
+    spi_device_interface_config_t lcd_interface_config = {};
+    lcd_interface_config.clock_speed_hz = 20 * 1000 * 1000;
+    lcd_interface_config.mode = 3;
+    lcd_interface_config.spics_io_num = LCD_CS_PIN;
+    lcd_interface_config.queue_size = 6;
+    ESP_ERROR_CHECK(spi_bus_add_device(lcd_host_device, &lcd_interface_config, &lcd_spi_handle));
+    vTaskDelay(50 / portTICK_PERIOD_MS);
+
+    // esp_lcd_panel_io_handle_t lcd_io_handle = NULL;
+    // esp_lcd_panel_io_spi_config_t lcd_io_config = {};
+    // lcd_io_config.dc_gpio_num = LCD_DC_RS_PIN;
+    // lcd_io_config.cs_gpio_num = LCD_CS_PIN;//    -1; // operate the bus exclusively
+    // lcd_io_config.pclk_hz = PIXEL_CLK_FREQ;
+    // lcd_io_config.spi_mode = 3;
+    // lcd_io_config.lcd_cmd_bits = 8;
+    // lcd_io_config.lcd_param_bits = 8;
+    // lcd_io_config.trans_queue_depth = TRANS_QUEUE_DEPTH;
+
+    // ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)lcd_spi_handle, &lcd_io_config, &lcd_io_handle));
+
+    // // lcd_panel_handle = NULL;
+    // esp_lcd_panel_dev_config_t lcd_panel_config = {};
+    // lcd_panel_config.reset_gpio_num = LCD_RST_PIN;
+    // lcd_panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
+    // lcd_panel_config.bits_per_pixel = 16;       // RGB565
+
+    // ESP_ERROR_CHECK(esp_lcd_new_panel_st7796(lcd_io_handle, &lcd_panel_config, &lcd_panel_handle));
+
+    // ESP_ERROR_CHECK(esp_lcd_panel_reset(lcd_panel_handle));
+    // vTaskDelay(50 / portTICK_PERIOD_MS);
+    // ESP_ERROR_CHECK(esp_lcd_panel_init(lcd_panel_handle));
+    // vTaskDelay(50 / portTICK_PERIOD_MS);
+
+    // // ESP_ERROR_CHECK(esp_lcd_panel_invert_color(lcd_panel_handle, false));
+    // ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(lcd_panel_handle, true));     // required for 480x320
+    // // ESP_ERROR_CHECK(esp_lcd_panel_mirror(lcd_panel_handle, false, false));
+
+
+
+}
+
+void lcd_send_cmd(uint8_t cmd)
+{
+    gpio_set_level(LCD_DC_RS_PIN, 0);
+
+    spi_transaction_t transaction = {};
+    transaction.length = 8;
+    transaction.tx_buffer = &cmd;
+
+    spi_device_transmit(lcd_spi_handle, &transaction);
+}
+
+void lcd_send_data(const uint8_t *data, int len) {
+    if (len == 0) {
+        return;
+    }
+
+    gpio_set_level(LCD_DC_RS_PIN, 1);
+    spi_transaction_t transaction = {};
+    transaction.length = len * 8;       // convert to bytes to bits
+    transaction.tx_buffer = data;
+
+    spi_device_transmit(lcd_spi_handle, &transaction);
+}
+
+void lcd_send_data16(uint16_t color) {
+    uint8_t d[2] = { color >> 8, color & 0xFF };
+    lcd_send_data(d, 2);
+}
+
+void lv_init_st7796() {
+    lcd_reset();
+
+    lcd_send_cmd(0x11);
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    lcd_send_cmd(0x3A);
+    lcd_send_data((uint8_t[]){0x55}, 1);
+
+    lcd_send_cmd(0x36);
+    lcd_send_data((uint8_t[]){0x28}, 1);
+
+    lcd_send_cmd(0x29);     // display on
+}
+
+void init_st7796() {
+    lcd_reset();
+
+    lcd_send_cmd(0x11);
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    lcd_send_cmd(0x3A);
+    lcd_send_data((uint8_t[]){0x55}, 1);
+
+    lcd_send_cmd(0x36);
+    lcd_send_data((uint8_t[]){0x28}, 1);
+
+    lcd_send_cmd(0x29);     // display on
+}
+
+void lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
+{
+    uint8_t data[4];
+
+    // CASET
+    lcd_send_cmd(0x2A);
+    data[0] = x0 >> 8; data[1] = x0;
+    data[2] = x1 >> 8; data[3] = x1;
+    lcd_send_data(data, 4);
+
+    // RASET
+    lcd_send_cmd(0x2B);
+    data[0] = y0 >> 8; data[1] = y0;
+    data[2] = y1 >> 8; data[3] = y1;
+    lcd_send_data(data, 4);
+
+    // RAMWR
+    lcd_send_cmd(0x2C);
+}
+
+void lv_lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
+    uint8_t data[4];
+
+    // CASET (column address)
+    lcd_send_cmd(0x2A);
+    data[0] = (x0 >> 8) & 0xFF;
+    data[1] = x0 & 0xFF;
+    data[2] = (x1 >> 8) & 0xFF;
+    data[3] = x1 & 0xFF;
+    lcd_send_data(data, 4);
+
+    // RASET (row address)
+    lcd_send_cmd(0x2B);
+    data[0] = (y0 >> 8) & 0xFF;
+    data[1] = y0 & 0xFF;
+    data[2] = (y1 >> 8) & 0xFF;
+    data[3] = y1 & 0xFF;
+    lcd_send_data(data, 4);
+
+    // RAMWR
+    lcd_send_cmd(0x2C);
+}
+
+void run_display_test() {
+    init_st7796();
+    
+    lcd_set_window(50, 50, 150, 100);
+
+    uint16_t color = 0x07FF; // cyan
+    for (int i = 0; i < (100 * 50); i++) {
+        lcd_send_data16(color);
+    }
+    printf("Test shape drawn.");
+
 }
 
 static uint32_t get_esp_tick(void) {
@@ -98,20 +242,34 @@ static uint32_t get_esp_tick(void) {
 }
 
 static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *color_map) {
-    int x1 = area->x1;
-    int y1 = area->y1;
-    int x2 = area->x2;
-    int y2 = area->y2;
+    int32_t x1 = area->x1;
+    int32_t y1 = area->y1;
+    int32_t x2 = area->x2;
+    int32_t y2 = area->y2;
 
-    // esp_lcd expects width/height as (end_x, end_y), exclusive
-    esp_lcd_panel_draw_bitmap(
-        lcd_panel_handle,
-        x1, y1,
-        x2 + 1, y2 + 1,
-        color_map
-    );
+    int32_t width  = x2 - x1 + 1;
+    int32_t height = y2 - y1 + 1;
+
+    uint16_t *pixels = (uint16_t *)color_map;
+
+    for (int32_t y = 0; y < height; y += LINES_PER_DMA) {
+        int32_t chunk_h = LINES_PER_DMA;
+        if (y + chunk_h > height) chunk_h = height - y;
+
+        // Set window for this chunk
+        lv_lcd_set_window(x1, y1 + y, x2, y1 + y + chunk_h - 1);
+
+        // Send pixels MSB-first (RGB)
+        for (int32_t i = 0; i < width * chunk_h; i++) {
+            uint16_t c = pixels[y * width + i];
+            uint8_t data[2] = { c >> 8, c & 0xFF }; // MSB first
+            lcd_send_data(data, 2);
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
 
     lv_display_flush_ready(disp);
+
 }
 
 void init_lvgl() {
@@ -119,211 +277,124 @@ void init_lvgl() {
     lv_tick_set_cb(get_esp_tick);
 
     static lv_color_t buf1[LCD_H_RES * LINES_PER_DMA];
-    static lv_draw_buf_t draw_buf;
-
-    lv_draw_buf_init(&draw_buf, LCD_H_RES, LINES_PER_DMA, LV_COLOR_FORMAT_RGB565, 0, buf1, sizeof(buf1));
+    static lv_color_t buf2[LCD_H_RES * LINES_PER_DMA];
 
     lv_display_t *disp = lv_display_create(LCD_H_RES, LCD_V_RES);
 
+    lv_display_set_buffers(disp, buf1, buf2, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
+
     lv_display_set_flush_cb(disp, lvgl_flush_cb);
 
-    lv_display_set_draw_buffers(disp, &draw_buf, NULL);
 }
 
-void show_boot_screen_no_dma() {
+void lvgl_task(void *arg) {
+
     if (!INCLUDE_LCD) {
         return;
     }
 
-    // // Configure PWM for backlight
-    // ledc_timer_config_t pwm_timer = {
-    //     .speed_mode = LEDC_SPEED_MODE_MAX,
-    //     .timer_num = LEDC_TIMER_0,
-    //     .duty_resolution = BACKLIGHT_PWM_RES,
-    //     .freq_hz = BACKLIGHT_PWM_FREQ,
-    //     .clk_cfg = LEDC_AUTO_CLK
-    // };
-    // ledc_timer_config(&pwm_timer);
+    lv_init_st7796();
+    init_lvgl();
 
-    // ledc_channel_config_t pwm_channel = {
-    //     .gpio_num = LED_CS_PIN,
-    //     .speed_mode = LEDC_SPEED_MODE_MAX,
-    //     .channel = LEDC_CHANNEL_0,
-    //     .intr_type = LEDC_INTR_DISABLE,
-    //     .timer_sel = LEDC_TIMER_0,
-    //     .duty = BACKLIGHT_DUTY,
-    //     .hpoint = 0
-    // };
-    // ledc_channel_config(&pwm_channel);
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
-    // Define each pixel in the row as 'black'
-    uint16_t black_line[LCD_H_RES];
-    for (int i = 0; i < LCD_H_RES; i++) black_line[i] = 0x0000;
-    
-    // Draw each row
-    for (int y = 0; y < LCD_V_RES; y++) {
-        esp_lcd_panel_draw_bitmap(lcd_panel_handle, 0, y, LCD_H_RES, y + 1, black_line);
-    }
-}
-
-static lv_style_t *create_black_boot_style(void) {
-    static lv_style_t style;
-    static bool initialized = false;
-
-    if (!initialized) {
-        lv_style_init(&style);
-        lv_style_set_bg_color(&style, lv_color_black());
-        lv_style_set_bg_opa(&style, LV_OPA_COVER);
-        initialized = true;
-    }
-    return &style;
-}
-
-void show_boot_screen_lvgl() {
-    if (!INCLUDE_LCD) {
-        return;
-    }
-
-    // // Configure PWM for backlight
-    // ledc_timer_config_t pwm_timer = {};
-    // pwm_timer.speed_mode = LEDC_SPEED_MODE_MAX;
-    // pwm_timer.timer_num = LEDC_TIMER_1;
-    // pwm_timer.duty_resolution = BACKLIGHT_PWM_RES;
-    // pwm_timer.freq_hz = BACKLIGHT_PWM_FREQ;
-    // pwm_timer.clk_cfg = LEDC_AUTO_CLK;
-
-    // ledc_timer_config(&pwm_timer);
-
-    // ledc_channel_config_t pwm_channel = {};
-    // pwm_channel.gpio_num = LED_CS_PIN;
-    // pwm_channel.speed_mode = LEDC_SPEED_MODE_MAX;
-    // pwm_channel.channel = LEDC_CHANNEL_1;
-    // pwm_channel.intr_type = LEDC_INTR_DISABLE;
-    // pwm_channel.timer_sel = LEDC_TIMER_1;
-    // pwm_channel.duty = BACKLIGHT_DUTY;
-    // pwm_channel.hpoint = 0;
-
-    // ledc_channel_config(&pwm_channel);
-
-    // Create boot screen using LVGL obejcts
-    lv_obj_t *screen = lv_obj_create(NULL);            // Create a blank LVGL screen
-    lv_obj_remove_style_all(screen);                   // Remove default white styling
-    lv_obj_add_style(screen, create_black_boot_style(), 0);
-
-    // Create "booting..." text
-    lv_obj_t *label = lv_label_create(screen);
-    lv_label_set_text(label, "Booting Pulse Pioneer...");
-
+    // -------------------- TEXT TEST --------------------
+    lv_obj_t *label = lv_label_create(lv_screen_active());
+    lv_label_set_text(label, "LVGL OK");
     lv_obj_set_style_text_color(label, lv_color_white(), 0);
-    lv_obj_set_style_text_font(label, LV_FONT_DEFAULT, 0);
-    lv_obj_center(label);
+    lv_obj_align(label, LV_ALIGN_CENTER, 0, -40);
 
-    lv_scr_load(screen);                            // Load as the active screen
+    // -------------------- RECTANGLE TEST --------------------
+    lv_obj_t *rect = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(rect, 120, 60);
+    lv_obj_align(rect, LV_ALIGN_CENTER, 0, 40);
 
-    // Force LVGL to update immediately
-    lv_timer_handler();                             
-    lv_timer_handler();                             // Call twice to ensure full flush
-}
+    lv_obj_set_style_bg_color(rect, lv_color_hex(0x00FF00), LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(rect, LV_OPA_COVER, LV_STATE_DEFAULT);
 
-void show_boot_screen() {
-    if (!INCLUDE_LCD) {
-        return;
+    while (1) {
+        lv_timer_handler();
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
-    
-    // // --- Configure PWM for backlight ---
-    // ledc_timer_config_t pwm_timer = {
-    //     .speed_mode = LEDC_SPEED_MODE_MAX,
-    //     .timer_num = LEDC_TIMER_0,
-    //     .duty_resolution = BACKLIGHT_PWM_RES,
-    //     .freq_hz = BACKLIGHT_PWM_FREQ,
-    //     .clk_cfg = LEDC_AUTO_CLK
+}
+
+void lvgl_test_screen() {
+
+
+    lv_init_st7796();
+
+    init_lvgl();
+
+
+
+
+
+
+
+    // lv_timer_handler();
+    // const esp_timer_create_args_t lvgl_timer_args = {
+    //     .callback = lvgl_timer_cb,
+    //     .name = "lvgl_tick"
     // };
-    // ledc_timer_config(&pwm_timer);
 
-    // ledc_channel_config_t pwm_channel = {
-    //     .gpio_num = LED_CS_PIN,
-    //     .speed_mode = LEDC_SPEED_MODE_MAX,
-    //     .channel = LEDC_CHANNEL_0,
-    //     .intr_type = LEDC_INTR_DISABLE,
-    //     .timer_sel = LEDC_TIMER_0,
-    //     .duty = BACKLIGHT_DUTY,
-    //     .hpoint = 0
-    // };
-    // ledc_channel_config(&pwm_channel);
-
-    // DMA Buffer size = LINES_PER_DMA * LCD_H_RES
-    // uint16_t black_block[LINES_PER_DMA * LCD_H_RES] __attribute__((aligned(4)));
-    // memset(black_block, 0x00, sizeof(black_block)); // Fill with black pixels
-    uint16_t test_line[10] __attribute__((aligned(4))) = {0xF800};
-    vTaskDelay(50 / portTICK_PERIOD_MS);
-    esp_lcd_panel_draw_bitmap(lcd_panel_handle, 0, 0, 10, 1, test_line);
-    vTaskDelay(50 / portTICK_PERIOD_MS);
+    // esp_timer_handle_t lvgl_timer;
+    // esp_timer_create(&lvgl_timer_args, &lvgl_timer);
+    // esp_timer_start_periodic(lvgl_timer, 5 * 1000);
 
 
-    // // Send black pixels in chunks of LINES_PER_DMA
-    // for (int y = 0; y < LCD_V_RES; y += LINES_PER_DMA) {
-    //     int lines_to_draw = LINES_PER_DMA;
-    //     if (y + LINES_PER_DMA > LCD_V_RES) {
-    //         lines_to_draw = LCD_V_RES - y; // handle last partial block
-    //     }
 
-    //     esp_lcd_panel_draw_bitmap(
-    //         lcd_panel_handle,
-    //         0, y,
-    //         LCD_H_RES, y + lines_to_draw,
-    //         black_block
-    //     );
-    // }
 }
 
-typedef struct {
-    lv_obj_t *chart;
-    lv_chart_series_t *ch1;
-    // lv_chart_series_t *ch2;
-    // lv_chart_series_t *ch3;
-} lv_waveform_t;
+// typedef struct {
+//     lv_obj_t *chart;
+//     lv_chart_series_t *ch1;
+//     // lv_chart_series_t *ch2;
+//     // lv_chart_series_t *ch3;
+// } lv_waveform_t;
 
-lv_waveform_t *create_waveform_plot(void) {
-    static lv_waveform_t *waveform;
-    waveform->chart = NULL;
-    waveform->ch1 = NULL;
+// lv_waveform_t *create_waveform_plot(void) {
+//     static lv_waveform_t *waveform;
+//     waveform->chart = NULL;
+//     waveform->ch1 = NULL;
 
-    // Remove all child objects from the active screen
-    lv_obj_clean(lv_screen_active());
+//     // Remove all child objects from the active screen
+//     lv_obj_clean(lv_screen_active());
 
-    // Initialize chart object
-    lv_obj_t *chart;
-    chart = lv_chart_create(lv_screen_active());
-    lv_obj_set_size(chart, 480, 300);
-    lv_obj_center(chart);
-    lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
+//     // Initialize chart object
+//     lv_obj_t *chart;
+//     chart = lv_chart_create(lv_screen_active());
+//     lv_obj_set_size(chart, 480, 300);
+//     lv_obj_center(chart);
+//     lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
     
-    lv_chart_series_t *ch1 = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_YELLOW), LV_CHART_AXIS_PRIMARY_Y);
+//     lv_chart_series_t *ch1 = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_YELLOW), LV_CHART_AXIS_PRIMARY_Y);
     
-    lv_chart_refresh(chart);
-    lv_timer_handler();     // update active screen
+//     lv_chart_refresh(chart);
+//     lv_timer_handler();     // update active screen
 
-    waveform->chart = chart;
-    waveform->ch1 = ch1;
+//     waveform->chart = chart;
+//     waveform->ch1 = ch1;
     
-    return waveform;
-}
+//     return waveform;
+// }
 
-lv_waveform_t* update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t new_data_size) {
-    lv_obj_t *chart = waveform->chart;
+// lv_waveform_t* update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t new_data_size) {
+//     lv_obj_t *chart = waveform->chart;
 
-    uint16_t i;
-    for (i = 0; i < new_data_size; i++) {
-        lv_chart_set_next_value(chart, waveform->ch1, *(new_data + i));
-    }
+//     uint16_t i;
+//     for (i = 0; i < new_data_size; i++) {
+//         lv_chart_set_next_value(chart, waveform->ch1, *(new_data + i));
+//     }
 
-    lv_chart_refresh(chart);
-    lv_timer_handler();     // update active screen
+//     lv_chart_refresh(chart);
+//     lv_timer_handler();     // update active screen
 
-    waveform->chart = chart;        // update waveform struct
+//     waveform->chart = chart;        // update waveform struct
 
-    return waveform;
-}
+//     return waveform;
+// }
 
 
 
