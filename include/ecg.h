@@ -6,6 +6,9 @@
 #include <stdint.h>
 #include "driver/gpio.h"
 
+// Enable ECG functionality
+#define INCLUDE_ECG 1
+
 extern const gpio_num_t ECG_SCLK_PIN;
 extern const gpio_num_t ECG_SDI_PIN;
 extern const gpio_num_t ECG_SDO_PIN;
@@ -18,9 +21,9 @@ typedef struct
 {
     uint32_t timestamp_us;
     uint8_t data_status;
-    int16_t ch1;
-    int16_t ch2;
-    int16_t ch3;
+    int32_t ch1;
+    int32_t ch2;
+    int32_t ch3;
 } ecg_sample_t;
 
 // Queue handle for streaming samples
@@ -30,15 +33,17 @@ extern QueueHandle_t ecg_sample_queue;
 void init_ecg(void);
 
 // Write single register to ADS1293
-void write_ecg_data(uint8_t addr, uint8_t data);
+// void write_ecg_data(uint8_t addr, uint8_t data);
 
 // Read one sample from ADS1293
-void ecg_read_sample(uint8_t *status, int16_t *ch1, int16_t *ch2);
+// void ecg_read_sample(uint8_t *status, int32_t *ch1, int32_t *ch2);
 
 // Stream ECG samples continuously to queue
-void stream_ecg_data(void);
+// void stream_ecg_data(void);
 
 // Power down ECG SPI interface
 void ecg_power_down(void);
+
+void ecg_stream_task(void *pvParameters);
 
 #endif // ECG_H

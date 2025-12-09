@@ -5,9 +5,17 @@
 // #include "esp_lcd_st7796.h"
 // #include "esp_lcd_panel_ops.h"
 #include "driver/ledc.h"
+#include "driver/gptimer.h"
 #include <string.h>
 #include <lvgl.h>
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "esp_task_wdt.h"
+
+#include "esp_log.h"
+static const char *TAG = "lcd.c";
 
 const gpio_num_t LED_CS_PIN = 1;
 const gpio_num_t LCD_SDO_PIN = 4;
@@ -17,33 +25,124 @@ const gpio_num_t LCD_DC_RS_PIN = 7;
 const gpio_num_t LCD_RST_PIN = 15;
 const gpio_num_t LCD_CS_PIN = 16;
 
-#define INCLUDE_LCD 1
+// Debug setting
+#define _TESTING 0
 
 #define LCD_H_RES 480
 #define LCD_V_RES 320
 #define LINES_PER_DMA 40
 #define PIXEL_CLK_FREQ 20 * 1000 * 1000
-#define TRANS_QUEUE_DEPTH 10
+#define TIMER_DUTY_RESOLUTION 10
+#define LED_PWM_SPEED_MODE LEDC_LOW_SPEED_MODE
+#define LED_PWM_CHANNEL LEDC_CHANNEL_0
 
-#define BACKLIGHT_PWM_FREQ  1000    // 5 kHz
-#define BACKLIGHT_PWM_RES   LEDC_TIMER_13_BIT
-#define BACKLIGHT_DUTY      4096    // Adjust duty (0-8191 for 13-bit resolution)
 
 static spi_device_handle_t lcd_spi_handle;
 // static esp_lcd_panel_handle_t lcd_panel_handle;
 static spi_host_device_t lcd_host_device;
 
+void set_led_pwm(uint8_t p) {
+    if (p > 100) {
+        ESP_LOGE(TAG, "Duty cycle parameter exceeded 100%%");
+        return;
+    }
+
+    // ESP_ERROR_CHECK(ledc_set_duty_and_update(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, (p * ((1 << TIMER_DUTY_RESOLUTION) - 1)) / 100, 0));     // only use if switching to a fade service
+    ESP_ERROR_CHECK(ledc_set_duty(LED_PWM_SPEED_MODE, LED_PWM_CHANNEL, (p * ((1 << TIMER_DUTY_RESOLUTION) - 1)) / 100));
+    ESP_ERROR_CHECK(ledc_update_duty(LED_PWM_SPEED_MODE, LED_PWM_CHANNEL));
+}
+
 void lcd_reset() {
+    uint32_t current_ledc_duty = ledc_get_duty(LED_PWM_SPEED_MODE, LED_PWM_CHANNEL);
+    if (current_ledc_duty != LEDC_ERR_DUTY) {       // turn off backlight before reset
+        set_led_pwm(0);
+        vTaskDelay(20);
+    }
+
+    // Reset
     gpio_set_level(LCD_RST_PIN, 0);     // reset with enable-low
     vTaskDelay(pdMS_TO_TICKS(20));
     gpio_set_level(LCD_RST_PIN, 1);     // disable
-    vTaskDelay(pdMS_TO_TICKS(150));
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    if (current_ledc_duty != LEDC_ERR_DUTY) {       // turn backlight on after reset
+        set_led_pwm(100);
+        vTaskDelay(20);
+    }
 }
 
-void lvgl_timer_cb(void *arg) {
-    lv_timer_handler();
-    vTaskDelay(pdMS_TO_TICKS(10));
+static TaskHandle_t lcd_timeout_handle = NULL;
+static bool IRAM_ATTR lcd_timeout_callback(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_data) {
+    BaseType_t high_task_awoken = pdFALSE;
+    vTaskNotifyGiveFromISR(lcd_timeout_handle, &high_task_awoken);
+
+    return high_task_awoken == pdTRUE;
 }
+
+static void lcd_timeout_task() {
+    while (1) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        // Timer has expired
+        set_led_pwm(10);
+        ESP_LOGI(TAG, "LCD auto-timeout triggered. LCD Brightness has been reduced.");
+    }
+}
+
+static gptimer_handle_t timer_handle = NULL;
+void init_timeout() {
+    gptimer_config_t timer_config = {};
+    timer_config.clk_src = GPTIMER_CLK_SRC_DEFAULT;
+    timer_config.direction = GPTIMER_COUNT_UP;
+    timer_config.resolution_hz = 1000000;     // 1 micro-second per tick
+
+    ESP_ERROR_CHECK(gptimer_new_timer(&timer_config, &timer_handle));
+
+    gptimer_alarm_config_t timer_alarm_config = {};
+    if (_TESTING) {
+        timer_alarm_config.alarm_count = 60000000;       // 60,000,000 ticks (1 minute)
+    }
+    else {
+        timer_alarm_config.alarm_count = 600000000;       // 600,000,000 ticks (10 minutes)
+    }
+    timer_alarm_config.flags.auto_reload_on_alarm = 0;      // will be manually reset when user input is detected
+
+    ESP_ERROR_CHECK(gptimer_set_alarm_action(timer_handle, &timer_alarm_config));
+
+    gptimer_event_callbacks_t timer_callback = {};
+    timer_callback.on_alarm = lcd_timeout_callback;     // set the timeout callback to trigger on alarm
+
+    ESP_ERROR_CHECK(gptimer_register_event_callbacks(timer_handle, &timer_callback, NULL));
+    ESP_ERROR_CHECK(gptimer_enable(timer_handle));
+}
+
+void init_led_pwm() {
+    // Create lcd timeout task for auto-dimming the display with priority=5 
+    xTaskCreate(lcd_timeout_task, "lcd_timeout_task", 2048, NULL, 5, &lcd_timeout_handle);
+
+    init_timeout();
+
+    ledc_timer_config_t timer_config = {};
+    timer_config.speed_mode = LED_PWM_SPEED_MODE;
+    timer_config.duty_resolution = TIMER_DUTY_RESOLUTION;   // can probably be reduced
+    timer_config.timer_num = LEDC_TIMER_0;                  // must match channel_config.timer_sel below
+    timer_config.freq_hz = 1000;
+    timer_config.clk_cfg = LEDC_AUTO_CLK;
+
+    ESP_ERROR_CHECK(ledc_timer_config(&timer_config));
+
+    ledc_channel_config_t channel_config = {};
+    channel_config.gpio_num = LED_CS_PIN;
+    channel_config.speed_mode = LED_PWM_SPEED_MODE;
+    channel_config.channel = LED_PWM_CHANNEL;
+    channel_config.intr_type = LEDC_INTR_DISABLE;       // enable if implementing PWM fade
+    channel_config.timer_sel = LEDC_TIMER_0;            // must match timer_config.timer_num above
+    channel_config.duty = 0;        // 0% for init
+
+    ESP_ERROR_CHECK(ledc_channel_config(&channel_config));
+}
+
+
 
 void init_lcd() {
 
@@ -53,6 +152,9 @@ void init_lcd() {
 
     gpio_set_level(LCD_CS_PIN, 1);
     gpio_set_level(LCD_DC_RS_PIN, 1);
+
+    init_led_pwm();
+    set_led_pwm(0);
 
     lcd_host_device = SPI3_HOST;
 
@@ -70,19 +172,13 @@ void init_lcd() {
     lcd_bus_config.data6_io_num = -1;
     lcd_bus_config.data7_io_num = -1;
 
-    // Defaults
-    // lcd_bus_config.data_io_default_level = 0;
-    // lcd_bus_config.flags = 0;
-    // lcd_bus_config.isr_cpu_id = 0;
-    // lcd_bus_config.intr_flags = 0;
-
     spi_dma_chan_t lcd_dma_chan = SPI_DMA_CH_AUTO;
 
-    ESP_ERROR_CHECK(spi_bus_initialize(lcd_host_device, &lcd_bus_config, lcd_dma_chan));
+    ESP_ERROR_CHECK(spi_bus_initialize(lcd_host_device, &lcd_bus_config, lcd_dma_chan));        // Use DMA
     vTaskDelay(50 / portTICK_PERIOD_MS);
 
     spi_device_interface_config_t lcd_interface_config = {};
-    lcd_interface_config.clock_speed_hz = 20 * 1000 * 1000;
+    lcd_interface_config.clock_speed_hz = PIXEL_CLK_FREQ;     // 20 MHz
     lcd_interface_config.mode = 3;
     lcd_interface_config.spics_io_num = LCD_CS_PIN;
     lcd_interface_config.queue_size = 6;
@@ -117,12 +213,20 @@ void init_lcd() {
     // // ESP_ERROR_CHECK(esp_lcd_panel_invert_color(lcd_panel_handle, false));
     // ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(lcd_panel_handle, true));     // required for 480x320
     // // ESP_ERROR_CHECK(esp_lcd_panel_mirror(lcd_panel_handle, false, false));
-
-
-
 }
 
-void lcd_send_cmd(uint8_t cmd)
+void turn_on_display() {
+    if (!INCLUDE_LCD) {
+        return;
+    }
+
+    // Start timer for lcd auto-timeout
+    ESP_ERROR_CHECK(gptimer_set_raw_count(timer_handle, 0));
+    ESP_ERROR_CHECK(gptimer_start(timer_handle));
+}
+
+// Simple test function for writing to lcd registers
+static void lcd_send_cmd(uint8_t cmd)
 {
     gpio_set_level(LCD_DC_RS_PIN, 0);
 
@@ -133,7 +237,8 @@ void lcd_send_cmd(uint8_t cmd)
     spi_device_transmit(lcd_spi_handle, &transaction);
 }
 
-void lcd_send_data(const uint8_t *data, int len) {
+// Simple test function for writing to lcd registers
+static void lcd_send_data(const uint8_t *data, int len) {
     if (len == 0) {
         return;
     }
@@ -146,12 +251,14 @@ void lcd_send_data(const uint8_t *data, int len) {
     spi_device_transmit(lcd_spi_handle, &transaction);
 }
 
-void lcd_send_data16(uint16_t color) {
+// Simple test function for writing to lcd registers
+static void lcd_send_data16(uint16_t color) {
     uint8_t d[2] = { color >> 8, color & 0xFF };
     lcd_send_data(d, 2);
 }
 
-void lv_init_st7796() {
+// Configure ST7796 registers before streaming display data
+static void lv_init_st7796() {
     lcd_reset();
 
     lcd_send_cmd(0x11);
@@ -166,7 +273,8 @@ void lv_init_st7796() {
     lcd_send_cmd(0x29);     // display on
 }
 
-void init_st7796() {
+// For non-lvgl use
+static void init_st7796() {
     lcd_reset();
 
     lcd_send_cmd(0x11);
@@ -181,6 +289,7 @@ void init_st7796() {
     lcd_send_cmd(0x29);     // display on
 }
 
+// For non-LVGL use
 void lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
     uint8_t data[4];
@@ -224,6 +333,7 @@ void lv_lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
     lcd_send_cmd(0x2C);
 }
 
+// Simple display test without LVGL
 void run_display_test() {
     init_st7796();
     
@@ -241,6 +351,7 @@ static uint32_t get_esp_tick(void) {
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
+// Main LVGL callback for data streaming
 static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *color_map) {
     int32_t x1 = area->x1;
     int32_t y1 = area->y1;
@@ -265,13 +376,14 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *co
             uint8_t data[2] = { c >> 8, c & 0xFF }; // MSB first
             lcd_send_data(data, 2);
         }
-        vTaskDelay(pdMS_TO_TICKS(20));
+        // vTaskDelay(pdMS_TO_TICKS(5));       // reduces screen reload tear
+        vTaskDelay(0);
     }
 
     lv_display_flush_ready(disp);
-
 }
 
+//  Initialize LVGL library and components
 void init_lvgl() {
     lv_init();
     lv_tick_set_cb(get_esp_tick);
@@ -282,18 +394,17 @@ void init_lvgl() {
     lv_display_t *disp = lv_display_create(LCD_H_RES, LCD_V_RES);
 
     lv_display_set_buffers(disp, buf1, buf2, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
-
     lv_display_set_flush_cb(disp, lvgl_flush_cb);
-
 }
 
-void lvgl_task(void *arg) {
-
+// Main LVGL task
+void lvgl_task(void *pvParameters) {
     if (!INCLUDE_LCD) {
         return;
     }
 
-    lv_init_st7796();
+    turn_on_display();      // starts auto-timeout timer
+    lv_init_st7796();       // configure ST7796 registers for data streaming
     init_lvgl();
 
     lv_obj_t *scr = lv_scr_act();
@@ -314,37 +425,12 @@ void lvgl_task(void *arg) {
     lv_obj_set_style_bg_color(rect, lv_color_hex(0x00FF00), LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(rect, LV_OPA_COVER, LV_STATE_DEFAULT);
 
-    while (1) {
-        lv_timer_handler();
+    set_led_pwm(100); // turn on backlight
+
+    while (1) {     // loop indefinitely while waiting for new data frames
+        lv_timer_handler();     // update display
         vTaskDelay(pdMS_TO_TICKS(20));
     }
-}
-
-void lvgl_test_screen() {
-
-
-    lv_init_st7796();
-
-    init_lvgl();
-
-
-
-
-
-
-
-    // lv_timer_handler();
-    // const esp_timer_create_args_t lvgl_timer_args = {
-    //     .callback = lvgl_timer_cb,
-    //     .name = "lvgl_tick"
-    // };
-
-    // esp_timer_handle_t lvgl_timer;
-    // esp_timer_create(&lvgl_timer_args, &lvgl_timer);
-    // esp_timer_start_periodic(lvgl_timer, 5 * 1000);
-
-
-
 }
 
 // typedef struct {
@@ -396,8 +482,7 @@ void lvgl_test_screen() {
 //     return waveform;
 // }
 
-
-
+// Show ADS1293 error message in a message box on the display
 void show_ecg_error_message(const char *text) {
     if (!INCLUDE_LCD) {
         return;

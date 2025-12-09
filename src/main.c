@@ -13,7 +13,7 @@
 
 #define RGB_LED_PIN 38
 #define POWER_PIN GPIO_NUM_3
-#define LED_BRIGHTNESS 25
+#define RGB_LED_BRIGHTNESS 25
 
 void init_gpio() {
     gpio_config_t io_conf = {};
@@ -53,15 +53,6 @@ void init_gpio() {
     ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(POWER_PIN));
 }
 
-
-void start_deep_sleep() {
-    if (esp_sleep_is_valid_wakeup_gpio(POWER_PIN))      // check if GPIO3 can enable ext0 wakeup
-    {
-        esp_sleep_enable_ext0_wakeup(POWER_PIN, 0);
-        esp_deep_sleep_start();
-    }
-}
-
 static led_strip_handle_t board_led_handle;
 void init_rgb_indicator(void) {
     
@@ -76,8 +67,6 @@ void init_rgb_indicator(void) {
     strip_rmt_config.flags.with_dma = 1;
 
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &strip_rmt_config, &board_led_handle));
-
-    // return board_led_handle;
 }
 
 void show_rgb_led(uint32_t color_r, uint32_t color_g, uint32_t color_b, uint32_t brightness) {
@@ -91,39 +80,59 @@ void show_rgb_led(uint32_t color_r, uint32_t color_g, uint32_t color_b, uint32_t
     ESP_ERROR_CHECK(led_strip_refresh(board_led_handle));
 }
 
-void system_boot() {
-    init_gpio();
-    init_rgb_indicator();
-    show_rgb_led(255, 255, 0, LED_BRIGHTNESS);        // yellow
-    vTaskDelay(1000 / portTICK_PERIOD_MS);              // pause for one second
-
-    // esp_sleep_wakeup_cause_t deep_wakeup_cause = esp_sleep_get_wakeup_cause();
-    // if (deep_wakeup_cause != ESP_SLEEP_WAKEUP_EXT0) {
-    //     start_deep_sleep();
-    // }
-    init_ecg();
-    init_lcd();
-    // show_boot_screen_no_dma();
-    // show_boot_screen_lvgl();
-    show_rgb_led(0, 255, 0, LED_BRIGHTNESS);        // green
+void start_deep_sleep() {
+    if (esp_sleep_is_valid_wakeup_gpio(POWER_PIN))      // check if GPIO3 can enable ext0 wakeup
+    {
+        esp_sleep_enable_ext0_wakeup(POWER_PIN, 0);
+        esp_deep_sleep_start();
+    }
 }
 
+void start_system_boot() {
+    init_gpio();
+    init_rgb_indicator();
+    show_rgb_led(255, 255, 0, RGB_LED_BRIGHTNESS);        // yellow
+    vTaskDelay(1000 / portTICK_PERIOD_MS);              // pause for one second
+
+    esp_sleep_wakeup_cause_t deep_wakeup_cause = esp_sleep_get_wakeup_cause();
+    if (deep_wakeup_cause != ESP_SLEEP_WAKEUP_EXT0) {
+        start_deep_sleep();
+    }
+
+    if (INCLUDE_ECG) {
+        init_ecg();
+    }
+    if (INCLUDE_LCD) {
+        init_lcd();
+    }
+
+    show_rgb_led(0, 255, 0, RGB_LED_BRIGHTNESS);        // green
+}
+
+// TODO: Update
 void power_down() {
     ecg_power_down();
 }
 
 void app_main() {
-    system_boot();
-    // TODO: Check ECG alarms
-    stream_ecg_data();
-    // run_display_test();
+    start_system_boot();
 
-    xTaskCreate(lvgl_task, "lvgl_task", 4096, NULL, 1, NULL);
+    // Create ECG streaming task with priority=4 on cpu=1
+    if (INCLUDE_ECG) {
+        xTaskCreatePinnedToCore(ecg_stream_task, "ecg_stream_task", 4096, NULL, 4, NULL, 1);
 
-    show_rgb_led(0, 0, 255, LED_BRIGHTNESS); // blue
+    }
 
+    // Create LVGL display task with priority=3 on cpu=0
+    if (INCLUDE_LCD) {
+        xTaskCreatePinnedToCore(lvgl_task, "lvgl_task", 4096, NULL, 3, NULL, 0);
+    }
+    
+    show_rgb_led(0, 0, 255, RGB_LED_BRIGHTNESS); // blue
+
+    // Wait indefinitely while tasks run
     while (1) {
-        vTaskDelay(10 / portTICK_PERIOD_MS);
+        vTaskDelay(100 / portTICK_PERIOD_MS);
     };
     power_down();
 }
