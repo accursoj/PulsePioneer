@@ -1,0 +1,4 @@
+# Name, Type,   SubType,    Offset, Size
+nvs,    data,   nvs,        0x9000, 16k
+app,    app,    factory,    0x10000, 30M
+spiffs, data,   spiffs,     ,       1792K

@@ -112,23 +112,30 @@ void start_system_boot() {
 // TODO: Update
 void power_down() {
     ecg_power_down();
+    // TODO: safe power down for all modules
 }
 
-void app_main() {
+static TaskHandle_t ecg_stream_task_handle = NULL;
+static TaskHandle_t lvgl_task_handle = NULL;
+void app_main()
+{
     start_system_boot();
 
     // Create ECG streaming task with priority=4 on cpu=1
     if (INCLUDE_ECG) {
-        xTaskCreatePinnedToCore(ecg_stream_task, "ecg_stream_task", 4096, NULL, 4, NULL, 1);
-
+        xTaskCreatePinnedToCore(ecg_stream_task, "ecg_stream_task", 4096, NULL, 4, &ecg_stream_task_handle, 1);
     }
-
+    
     // Create LVGL display task with priority=3 on cpu=0
     if (INCLUDE_LCD) {
-        xTaskCreatePinnedToCore(lvgl_task, "lvgl_task", 4096, NULL, 3, NULL, 0);
+        xTaskCreatePinnedToCore(lvgl_task, "lvgl_task", 8192, NULL, 3, &lvgl_task_handle, 0);
     }
     
     show_rgb_led(0, 0, 255, RGB_LED_BRIGHTNESS); // blue
+
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    if (INCLUDE_ECG && ecg_stream_task_handle) printf("Info: uxTaskGetStackHighWaterMark2(ecg_stream_task_handle) returned %ld\n", uxTaskGetStackHighWaterMark2(ecg_stream_task_handle));
+    if (INCLUDE_LCD && lvgl_task_handle) printf("Info: uxTaskGetStackHighWaterMark2(lvgl_task_handle) returned %ld\n", uxTaskGetStackHighWaterMark2(lvgl_task_handle));
 
     // Wait indefinitely while tasks run
     while (1) {

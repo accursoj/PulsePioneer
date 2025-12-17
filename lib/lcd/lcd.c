@@ -56,7 +56,7 @@ void lcd_reset() {
     uint32_t current_ledc_duty = ledc_get_duty(LED_PWM_SPEED_MODE, LED_PWM_CHANNEL);
     if (current_ledc_duty != LEDC_ERR_DUTY) {       // turn off backlight before reset
         set_led_pwm(0);
-        vTaskDelay(20);
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 
     // Reset
@@ -67,7 +67,7 @@ void lcd_reset() {
 
     if (current_ledc_duty != LEDC_ERR_DUTY) {       // turn backlight on after reset
         set_led_pwm(100);
-        vTaskDelay(20);
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 
@@ -163,6 +163,7 @@ void init_lcd() {
     lcd_bus_config.miso_io_num = LCD_SDO_PIN;
     lcd_bus_config.sclk_io_num = LCD_SCK_PIN;
     lcd_bus_config.max_transfer_sz = LCD_H_RES * LCD_V_RES * 2; // LCD_H_RES * LINES_PER_DMA * sizeof(uint16_t);
+    lcd_bus_config.isr_cpu_id = ESP_INTR_CPU_AFFINITY_0;
 
     // Not used
     lcd_bus_config.quadwp_io_num = -1;
@@ -427,7 +428,7 @@ void lvgl_task(void *pvParameters) {
 
     set_led_pwm(100); // turn on backlight
 
-    while (1) {     // loop indefinitely while waiting for new data frames
+    for( ;; ) {     // loop indefinitely while waiting for new data frames
         lv_timer_handler();     // update display
         vTaskDelay(pdMS_TO_TICKS(20));
     }

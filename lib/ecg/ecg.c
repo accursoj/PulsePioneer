@@ -86,6 +86,7 @@ void init_ecg() {
     ecg_bus_config.miso_io_num = ECG_SDO_PIN;
     ecg_bus_config.sclk_io_num = ECG_SCLK_PIN;
     ecg_bus_config.max_transfer_sz = 4096;
+    ecg_bus_config.isr_cpu_id = ESP_INTR_CPU_AFFINITY_1;
 
     // Not used
     ecg_bus_config.quadwp_io_num = -1;
