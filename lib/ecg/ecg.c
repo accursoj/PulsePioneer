@@ -13,7 +13,7 @@ spi_host_device_t ecg_host_device;
 spi_device_handle_t ecg_handle;
 
 // Queue for all ECG samples to be processed (not implemented)
-QueueHandle_t ecg_sample_queue;
+QueueHandle_t ecg_sample_queue = NULL;
 
 const gpio_num_t ECG_SCLK_PIN = 9;
 const gpio_num_t ECG_SDI_PIN = 10;
@@ -183,7 +183,7 @@ void ecg_read_sample(uint8_t *status, int32_t *ch1, int32_t *ch2) {
     *ch2 = ch2_raw;
 }
 
-void read_alarm_error() {
+void print_alarm_errors() {
     uint8_t rx_buffer_data[NUM_BYTES_ECG_SAMPLE] = {0};
     uint8_t tx_buffer_data[NUM_BYTES_ECG_SAMPLE] = {(0b10000000 | 0x19), 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
@@ -228,13 +228,8 @@ void stream_ecg_data() {
         sample.ch2 = ch2_raw;
         sample.ch3 = sample.ch1 - sample.ch2;
 
-        // if (xQueueSend(ecg_sample_queue, &sample, 0) != pdTRUE) {
-        //     return;
-        // }
-        if (gpio_get_level(ECG_ALAB_PIN) == 0) {
-            // if (_TESTING) {
-            //     read_alarm_error();
-            // }
+        if (_TESTING && gpio_get_level(ECG_ALAB_PIN) == 0) {
+            print_alarm_errors();
         }
         if (sample.data_status != 0) {
             // printf("\n%ld\n%#04x\nCH1:%d\nCH2:%d\nCH3:%d\n", sample.timestamp_us, sample.data_status, sample.ch1, sample.ch2, sample.ch3);
@@ -245,8 +240,12 @@ void stream_ecg_data() {
                     decim = 0;
                 }
             }
-            vTaskDelay(5 / portTICK_PERIOD_MS);
-            // vTaskDelay(0);
+            // vTaskDelay(pdMS_TO_TICKS(5));
+            vTaskDelay(0);
+        }
+        if (xQueueSend(ecg_sample_queue, &sample, 0) != pdTRUE && _TESTING) {
+            printf("ECG Data Sample Queue is Full at timestamp:%ld", sample.timestamp_us);
+            return;     // stop streaming if queue is full
         }
     } else {
         // printf("No data ready.");
@@ -256,7 +255,7 @@ void stream_ecg_data() {
 
 void ecg_stream_task(void *pvParameters) {
     // TODO: Implement data queue for asynchronous data processing
-    // ecg_sample_queue = xQueueCreate(256, sizeof(ecg_sample_t));      // data queue for asynchronous data processing
+    ecg_sample_queue = xQueueCreate(256, sizeof(ecg_sample_t));      // data queue for asynchronous data processing
     
     write_ecg_data(0x2F, 0x31); // enable CH2, CH1, and DATA_STATUS for loop read-back mode
     write_ecg_data(0x00, 0x01); // start conversion

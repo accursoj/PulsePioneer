@@ -13,6 +13,7 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "esp_task_wdt.h"
+#include "ecg.h"
 
 #include "esp_log.h"
 static const char *TAG = "lcd.c";
@@ -24,6 +25,8 @@ const gpio_num_t LCD_SDI_PIN = 6;
 const gpio_num_t LCD_DC_RS_PIN = 7;
 const gpio_num_t LCD_RST_PIN = 15;
 const gpio_num_t LCD_CS_PIN = 16;
+
+char system_state = 0;      // start in boot mode
 
 // Debug setting
 #define _TESTING 0
@@ -41,7 +44,7 @@ static spi_device_handle_t lcd_spi_handle;
 // static esp_lcd_panel_handle_t lcd_panel_handle;
 static spi_host_device_t lcd_host_device;
 
-void set_led_pwm(uint8_t p) {
+static void set_led_pwm(uint8_t p) {
     if (p > 100) {
         ESP_LOGE(TAG, "Duty cycle parameter exceeded 100%%");
         return;
@@ -52,7 +55,7 @@ void set_led_pwm(uint8_t p) {
     ESP_ERROR_CHECK(ledc_update_duty(LED_PWM_SPEED_MODE, LED_PWM_CHANNEL));
 }
 
-void lcd_reset() {
+static void lcd_reset() {
     uint32_t current_ledc_duty = ledc_get_duty(LED_PWM_SPEED_MODE, LED_PWM_CHANNEL);
     if (current_ledc_duty != LEDC_ERR_DUTY) {       // turn off backlight before reset
         set_led_pwm(0);
@@ -90,7 +93,7 @@ static void lcd_timeout_task() {
 }
 
 static gptimer_handle_t timer_handle = NULL;
-void init_timeout() {
+static void init_timeout() {
     gptimer_config_t timer_config = {};
     timer_config.clk_src = GPTIMER_CLK_SRC_DEFAULT;
     timer_config.direction = GPTIMER_COUNT_UP;
@@ -116,7 +119,7 @@ void init_timeout() {
     ESP_ERROR_CHECK(gptimer_enable(timer_handle));
 }
 
-void init_led_pwm() {
+static void init_led_pwm() {
     // Create lcd timeout task for auto-dimming the display with priority=5 
     xTaskCreate(lcd_timeout_task, "lcd_timeout_task", 2048, NULL, 5, &lcd_timeout_handle);
 
@@ -141,8 +144,6 @@ void init_led_pwm() {
 
     ESP_ERROR_CHECK(ledc_channel_config(&channel_config));
 }
-
-
 
 void init_lcd() {
 
@@ -216,7 +217,7 @@ void init_lcd() {
     // // ESP_ERROR_CHECK(esp_lcd_panel_mirror(lcd_panel_handle, false, false));
 }
 
-void turn_on_display() {
+static void turn_on_display() {
     if (!INCLUDE_LCD) {
         return;
     }
@@ -291,7 +292,7 @@ static void init_st7796() {
 }
 
 // For non-LVGL use
-void lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
+static void lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
     uint8_t data[4];
 
@@ -311,7 +312,7 @@ void lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
     lcd_send_cmd(0x2C);
 }
 
-void lv_lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
+static void lv_lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
     uint8_t data[4];
 
     // CASET (column address)
@@ -385,7 +386,7 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *co
 }
 
 //  Initialize LVGL library and components
-void init_lvgl() {
+static void init_lvgl() {
     lv_init();
     lv_tick_set_cb(get_esp_tick);
 
@@ -398,12 +399,7 @@ void init_lvgl() {
     lv_display_set_flush_cb(disp, lvgl_flush_cb);
 }
 
-// Main LVGL task
-void lvgl_task(void *pvParameters) {
-    if (!INCLUDE_LCD) {
-        return;
-    }
-
+static void show_boot_screen() {
     turn_on_display();      // starts auto-timeout timer
     lv_init_st7796();       // configure ST7796 registers for data streaming
     init_lvgl();
@@ -427,63 +423,129 @@ void lvgl_task(void *pvParameters) {
     lv_obj_set_style_bg_opa(rect, LV_OPA_COVER, LV_STATE_DEFAULT);
 
     set_led_pwm(100); // turn on backlight
+}
+typedef struct {
+    lv_obj_t *chart;
+    lv_chart_series_t *ch1;
+    lv_chart_series_t *ch2;
+    lv_chart_series_t *ch3;
+} lv_waveform_t;
+
+static lv_waveform_t *waveform = NULL;
+
+static lv_waveform_t *create_waveform_plot(void) {
+    static lv_waveform_t waveform = {};
+    waveform.chart = NULL;
+    waveform.ch1 = NULL;
+    waveform.ch2 = NULL;
+    waveform.ch3 = NULL;
+
+    // Remove all child objects from the active screen
+    lv_obj_clean(lv_screen_active());
+
+    // Initialize chart object
+    lv_obj_t *chart;
+    chart = lv_chart_create(lv_screen_active());
+    lv_obj_set_size(chart, 400, 300);       // currently takes up a subwindow of the display
+    lv_obj_center(chart);
+    lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
+    
+    lv_chart_series_t *ch1 = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_YELLOW), LV_CHART_AXIS_PRIMARY_Y);
+    // lv_chart_series_t *ch2 = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_GREEN), LV_CHART_AXIS_PRIMARY_Y);
+    // lv_chart_series_t *ch3 = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_LIGHT_BLUE), LV_CHART_AXIS_PRIMARY_Y);
+
+    lv_chart_refresh(chart);
+    lv_timer_handler();     // update active screen
+
+    waveform.chart = chart;
+    waveform.ch1 = ch1;
+    // waveform.ch2 = ch2;
+    // waveform.ch3 = ch3;
+
+    // Create pointer for waveform data
+    lv_waveform_t *wave_ptr = &waveform;
+
+    return wave_ptr;
+}
+
+static lv_waveform_t *update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t new_data_size) {
+    if (!waveform) {        // check for null
+        ESP_LOGI(TAG, "Waveform pointer is null. Waveform plot was not updated.");
+        return waveform;
+    }
+    lv_obj_t *chart = waveform->chart;
+
+    uint16_t i;
+    for (i = 0; i < new_data_size; i++) {
+        lv_chart_set_next_value(chart, waveform->ch1, *(new_data + i));
+    }
+
+    lv_chart_refresh(chart);
+    lv_timer_handler();     // update active screen
+
+    waveform->chart = chart;        // update waveform struct
+
+    return waveform;
+}
+
+static void show_waveform_plots() {
+    // Create waveform plot and initialize waveform if NULL
+    if (!waveform) {
+        waveform = create_waveform_plot();
+
+    }
+
+    // Update each waveform plot with queued data until queue is empty
+    ecg_sample_t *sample_buffer;
+    while (xQueueReceive(ecg_sample_queue, &sample_buffer, 0) != pdFALSE)
+    {
+        waveform = update_waveform_plot(waveform, &(sample_buffer->ch1), sizeof(sample_buffer->ch1));
+        waveform = update_waveform_plot(waveform, &(sample_buffer->ch2), sizeof(sample_buffer->ch2));
+        waveform = update_waveform_plot(waveform, &(sample_buffer->ch3), sizeof(sample_buffer->ch3));
+
+        // Render waveform
+        lv_timer_handler();
+        vTaskDelay(0);
+    }
+
+    ESP_LOGI(TAG, "ecg_sample_queue is empty. Returning from show_waveform_plots()...");
+}
+
+// ------------------------------
+// Main LVGL task
+// ------------------------------
+void lvgl_task(void *pvParameters) {
+    if (!INCLUDE_LCD) {
+        return;
+    }
 
     for( ;; ) {     // loop indefinitely while waiting for new data frames
         lv_timer_handler();     // update display
         vTaskDelay(pdMS_TO_TICKS(20));
+
+        switch (system_state) {
+            case 0:
+                // Render boot screen
+                show_boot_screen();
+                system_state = 1;
+                break;
+            case 2:
+                // Render waveform plots
+                show_waveform_plots();
+                system_state = 1;
+                break;
+            default:
+                // Wait for new data frames
+                break;
+        }
     }
+
+    // vTaskDelete(NULL);       // End calling task (lvgl_task) if done
 }
 
-// typedef struct {
-//     lv_obj_t *chart;
-//     lv_chart_series_t *ch1;
-//     // lv_chart_series_t *ch2;
-//     // lv_chart_series_t *ch3;
-// } lv_waveform_t;
-
-// lv_waveform_t *create_waveform_plot(void) {
-//     static lv_waveform_t *waveform;
-//     waveform->chart = NULL;
-//     waveform->ch1 = NULL;
-
-//     // Remove all child objects from the active screen
-//     lv_obj_clean(lv_screen_active());
-
-//     // Initialize chart object
-//     lv_obj_t *chart;
-//     chart = lv_chart_create(lv_screen_active());
-//     lv_obj_set_size(chart, 480, 300);
-//     lv_obj_center(chart);
-//     lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
-    
-//     lv_chart_series_t *ch1 = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_YELLOW), LV_CHART_AXIS_PRIMARY_Y);
-    
-//     lv_chart_refresh(chart);
-//     lv_timer_handler();     // update active screen
-
-//     waveform->chart = chart;
-//     waveform->ch1 = ch1;
-    
-//     return waveform;
-// }
-
-// lv_waveform_t* update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t new_data_size) {
-//     lv_obj_t *chart = waveform->chart;
-
-//     uint16_t i;
-//     for (i = 0; i < new_data_size; i++) {
-//         lv_chart_set_next_value(chart, waveform->ch1, *(new_data + i));
-//     }
-
-//     lv_chart_refresh(chart);
-//     lv_timer_handler();     // update active screen
-
-//     waveform->chart = chart;        // update waveform struct
-
-//     return waveform;
-// }
 
 // Show ADS1293 error message in a message box on the display
+// TODO: Implement fucntionality
 void show_ecg_error_message(const char *text) {
     if (!INCLUDE_LCD) {
         return;

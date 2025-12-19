@@ -5,7 +5,7 @@
 #include "driver/gpio.h"
 
 // ENable LCD functionality
-#define INCLUDE_LCD 0
+#define INCLUDE_LCD 1
 
 extern const gpio_num_t LED_CS_PIN;
 extern const gpio_num_t LCD_SDO_PIN;
@@ -14,6 +14,8 @@ extern const gpio_num_t LCD_SDI_PIN;
 extern const gpio_num_t LCD_DC_RS_PIN;
 extern const gpio_num_t LCD_RST_PIN;
 extern const gpio_num_t LCD_CS_PIN;
+
+extern char system_state;
 
 void init_lcd(void);
 

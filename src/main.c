@@ -130,7 +130,7 @@ void app_main()
     if (INCLUDE_LCD) {
         xTaskCreatePinnedToCore(lvgl_task, "lvgl_task", 8192, NULL, 3, &lvgl_task_handle, 0);
     }
-    
+
     show_rgb_led(0, 0, 255, RGB_LED_BRIGHTNESS); // blue
 
     vTaskDelay(pdMS_TO_TICKS(1000));
