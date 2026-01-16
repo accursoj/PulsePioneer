@@ -15,7 +15,10 @@
 #define POWER_PIN GPIO_NUM_3
 #define RGB_LED_BRIGHTNESS 25
 
+#define _TESTING 1
+
 void init_gpio() {
+    if (_TESTING) printf("Info: In init_gpio()\n");
     gpio_config_t io_conf = {};
 
     // Configure output pins
@@ -55,7 +58,7 @@ void init_gpio() {
 
 static led_strip_handle_t board_led_handle;
 void init_rgb_indicator(void) {
-    
+    if (_TESTING) printf("Info: In init_rgb_indicator()\n");
     led_strip_config_t strip_config = {};
     strip_config.strip_gpio_num = RGB_LED_PIN;
     strip_config.max_leds = 1;
@@ -70,6 +73,7 @@ void init_rgb_indicator(void) {
 }
 
 void show_rgb_led(uint32_t color_r, uint32_t color_g, uint32_t color_b, uint32_t brightness) {
+    if (_TESTING) printf("Info: In show_rgb_led\n");
     ESP_ERROR_CHECK(led_strip_set_pixel(
         board_led_handle,
         (0*brightness)/255,
@@ -81,6 +85,7 @@ void show_rgb_led(uint32_t color_r, uint32_t color_g, uint32_t color_b, uint32_t
 }
 
 void start_deep_sleep() {
+    if (_TESTING) printf("Info: In start_deep_sleep()\n");
     if (esp_sleep_is_valid_wakeup_gpio(POWER_PIN))      // check if GPIO3 can enable ext0 wakeup
     {
         esp_sleep_enable_ext0_wakeup(POWER_PIN, 0);
@@ -89,6 +94,8 @@ void start_deep_sleep() {
 }
 
 void start_system_boot() {
+    if (_TESTING) printf("Info: In start_system_boot()\n");
+
     init_gpio();
     init_rgb_indicator();
     show_rgb_led(255, 255, 0, RGB_LED_BRIGHTNESS);        // yellow
@@ -119,6 +126,7 @@ static TaskHandle_t ecg_stream_task_handle = NULL;
 static TaskHandle_t lvgl_task_handle = NULL;
 void app_main()
 {
+    if (_TESTING) printf("Info: In app_main()\n");
     start_system_boot();
 
     // Create ECG streaming task with priority=4 on cpu=1
@@ -126,9 +134,11 @@ void app_main()
         xTaskCreatePinnedToCore(ecg_stream_task, "ecg_stream_task", 4096, NULL, 4, &ecg_stream_task_handle, 1);
     }
     
-    // Create LVGL display task with priority=3 on cpu=0
+    // Create LVGL display task with priority=3 on cpu=1
+    // Reasoning: watchdog timeout when set to CPU=0 (potentially because CPU 0 is needed for internal functions)
+    // Info: still needs to be tested with simultaneous ecg_stream_task also on CPU=1
     if (INCLUDE_LCD) {
-        xTaskCreatePinnedToCore(lvgl_task, "lvgl_task", 8192, NULL, 3, &lvgl_task_handle, 0);
+        xTaskCreatePinnedToCore(lvgl_task, "lvgl_task", 8192, NULL, 3, &lvgl_task_handle, 1);
     }
 
     show_rgb_led(0, 0, 255, RGB_LED_BRIGHTNESS); // blue

@@ -29,7 +29,7 @@ const gpio_num_t LCD_CS_PIN = 16;
 char system_state = 0;      // start in boot mode
 
 // Debug setting
-#define _TESTING 0
+#define _TESTING 1
 
 #define LCD_H_RES 480
 #define LCD_V_RES 320
@@ -146,10 +146,10 @@ static void init_led_pwm() {
 }
 
 void init_lcd() {
-
     if (!INCLUDE_LCD) {
         return;
     }
+    if(_TESTING) printf("Info: in start_system_boot()\n");
 
     gpio_set_level(LCD_CS_PIN, 1);
     gpio_set_level(LCD_DC_RS_PIN, 1);
@@ -400,6 +400,8 @@ static void init_lvgl() {
 }
 
 static void show_boot_screen() {
+    if (_TESTING) printf("Info: In show_boot_screen()\n");
+
     turn_on_display();      // starts auto-timeout timer
     lv_init_st7796();       // configure ST7796 registers for data streaming
     init_lvgl();
@@ -489,10 +491,10 @@ static lv_waveform_t *update_waveform_plot(lv_waveform_t *waveform, int32_t *new
 }
 
 static void show_waveform_plots() {
+    if (_TESTING) printf("Info: In show_waveform_plots()\n");
     // Create waveform plot and initialize waveform if NULL
     if (!waveform) {
         waveform = create_waveform_plot();
-
     }
 
     // Update each waveform plot with queued data until queue is empty
@@ -518,6 +520,7 @@ void lvgl_task(void *pvParameters) {
     if (!INCLUDE_LCD) {
         return;
     }
+    if (_TESTING) printf("Info: Started lvgl_task()\n");
 
     for( ;; ) {     // loop indefinitely while waiting for new data frames
         lv_timer_handler();     // update display
@@ -541,6 +544,7 @@ void lvgl_task(void *pvParameters) {
     }
 
     // vTaskDelete(NULL);       // End calling task (lvgl_task) if done
+    if (_TESTING) printf("Info: Ended lvgl_task()\n");
 }
 
 

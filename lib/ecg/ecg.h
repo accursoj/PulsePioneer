@@ -7,7 +7,7 @@
 #include "driver/gpio.h"
 
 // Enable ECG functionality
-#define INCLUDE_ECG 1
+#define INCLUDE_ECG 0
 
 extern const gpio_num_t ECG_SCLK_PIN;
 extern const gpio_num_t ECG_SDI_PIN;

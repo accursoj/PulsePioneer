@@ -32,6 +32,7 @@ void write_ecg_data(uint8_t addr, uint8_t data) {
     if (!INCLUDE_ECG) {
         return;
     }
+    if (_TESTING) printf("Info: In write_ecg_data()\n");
 
     spi_transaction_t transaction = {};
     transaction.flags = SPI_TRANS_USE_TXDATA;
@@ -78,7 +79,7 @@ void init_ecg() {
     if (!INCLUDE_ECG) {
         return;
     }
-
+    if (_TESTING) printf("Info: In init_ecg()\n");
     ecg_host_device = SPI2_HOST;
 
     spi_bus_config_t ecg_bus_config = {};
@@ -254,7 +255,8 @@ void stream_ecg_data() {
 }
 
 void ecg_stream_task(void *pvParameters) {
-    // TODO: Implement data queue for asynchronous data processing
+    if (_TESTING) printf("Info: Started ecg_stream_task()\n");
+
     ecg_sample_queue = xQueueCreate(256, sizeof(ecg_sample_t));      // data queue for asynchronous data processing
     
     write_ecg_data(0x2F, 0x31); // enable CH2, CH1, and DATA_STATUS for loop read-back mode
@@ -264,6 +266,8 @@ void ecg_stream_task(void *pvParameters) {
         stream_ecg_data();
         vTaskDelay(pdMS_TO_TICKS(1));
     }
+
+    if (_TESTING) printf("Info: Ended ecg_stream_task()\n");
 }
 
 void ecg_power_down() {
