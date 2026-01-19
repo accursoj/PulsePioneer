@@ -10,6 +10,9 @@
 #include "led_strip.h"
 #include "led_strip_rmt.h"
 #include "sdkconfig.h"
+#include "esp_log.h"
+
+static const char *TAG = "main.c";
 
 #define RGB_LED_PIN 38
 #define POWER_PIN GPIO_NUM_3
@@ -18,7 +21,7 @@
 #define _TESTING 1
 
 void init_gpio() {
-    if (_TESTING) printf("Info: In init_gpio()\n");
+    if (_TESTING) ESP_LOGI(TAG, "In init_gpio()");
     gpio_config_t io_conf = {};
 
     // Configure output pins
@@ -58,7 +61,7 @@ void init_gpio() {
 
 static led_strip_handle_t board_led_handle;
 void init_rgb_indicator(void) {
-    if (_TESTING) printf("Info: In init_rgb_indicator()\n");
+    if (_TESTING) ESP_LOGI(TAG, "In init_rgb_indicator()");
     led_strip_config_t strip_config = {};
     strip_config.strip_gpio_num = RGB_LED_PIN;
     strip_config.max_leds = 1;
@@ -73,19 +76,18 @@ void init_rgb_indicator(void) {
 }
 
 void show_rgb_led(uint32_t color_r, uint32_t color_g, uint32_t color_b, uint32_t brightness) {
-    if (_TESTING) printf("Info: In show_rgb_led\n");
+    if (_TESTING) ESP_LOGI(TAG, "In show_rgb_led()");
     ESP_ERROR_CHECK(led_strip_set_pixel(
         board_led_handle,
-        (0*brightness)/255,
-        (color_r*brightness)/255,
-        (color_g*brightness)/255,
-        (color_b*brightness)/255)
-    );
+        (0 * brightness) / 255,
+        (color_r * brightness) / 255,
+        (color_g * brightness) / 255,
+        (color_b * brightness) / 255));
     ESP_ERROR_CHECK(led_strip_refresh(board_led_handle));
 }
 
 void start_deep_sleep() {
-    if (_TESTING) printf("Info: In start_deep_sleep()\n");
+    if (_TESTING) ESP_LOGI(TAG, "In start_deep_sleep()");
     if (esp_sleep_is_valid_wakeup_gpio(POWER_PIN))      // check if GPIO3 can enable ext0 wakeup
     {
         esp_sleep_enable_ext0_wakeup(POWER_PIN, 0);
@@ -93,8 +95,13 @@ void start_deep_sleep() {
     }
 }
 
+/*
+Initializes several critical subsystems, such as GPIO, on-board RGB indicator, ADS1293, and LCD.
+Will show yellow RGB LED after GPIO and RGB init. Stays yellow while in deep-sleep.
+Will show green RGB LED after woken up from deep sleep, successful ADS1293 init, and successful LCD init.
+*/
 void start_system_boot() {
-    if (_TESTING) printf("Info: In start_system_boot()\n");
+    if (_TESTING) ESP_LOGI(TAG, "In start_system_boot()");
 
     init_gpio();
     init_rgb_indicator();
@@ -126,7 +133,7 @@ static TaskHandle_t ecg_stream_task_handle = NULL;
 static TaskHandle_t lvgl_task_handle = NULL;
 void app_main()
 {
-    if (_TESTING) printf("Info: In app_main()\n");
+    if (_TESTING) ESP_LOGI(TAG, "In app_main()");
     start_system_boot();
 
     // Create ECG streaming task with priority=4 on cpu=1
@@ -135,7 +142,7 @@ void app_main()
     }
     
     // Create LVGL display task with priority=3 on cpu=1
-    // Reasoning: watchdog timeout when set to CPU=0 (potentially because CPU 0 is needed for internal functions)
+    // Reasoning: watchdog timeout when set to CPU=0 (potentially because CPU 0 is needed for internal functions?)
     // Info: still needs to be tested with simultaneous ecg_stream_task also on CPU=1
     if (INCLUDE_LCD) {
         xTaskCreatePinnedToCore(lvgl_task, "lvgl_task", 8192, NULL, 3, &lvgl_task_handle, 1);
@@ -144,8 +151,8 @@ void app_main()
     show_rgb_led(0, 0, 255, RGB_LED_BRIGHTNESS); // blue
 
     vTaskDelay(pdMS_TO_TICKS(1000));
-    if (INCLUDE_ECG && ecg_stream_task_handle) printf("Info: uxTaskGetStackHighWaterMark2(ecg_stream_task_handle) returned %ld\n", uxTaskGetStackHighWaterMark2(ecg_stream_task_handle));
-    if (INCLUDE_LCD && lvgl_task_handle) printf("Info: uxTaskGetStackHighWaterMark2(lvgl_task_handle) returned %ld\n", uxTaskGetStackHighWaterMark2(lvgl_task_handle));
+    if (INCLUDE_ECG && ecg_stream_task_handle) ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark2(ecg_stream_task_handle) returned %ld", uxTaskGetStackHighWaterMark2(ecg_stream_task_handle));
+    if (INCLUDE_LCD && lvgl_task_handle) ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark2(lvgl_task_handle) returned %ld", uxTaskGetStackHighWaterMark2(lvgl_task_handle));
 
     // Wait indefinitely while tasks run
     while (1) {

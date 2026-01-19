@@ -83,17 +83,21 @@ static bool IRAM_ATTR lcd_timeout_callback(gptimer_handle_t timer, const gptimer
 }
 
 static void lcd_timeout_task() {
-    while (1) {
+    if (_TESTING) ESP_LOGI(TAG, "Started lcd_timeout_task()");
+    while (1)
+    {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
         // Timer has expired
         set_led_pwm(10);
         ESP_LOGI(TAG, "LCD auto-timeout triggered. LCD Brightness has been reduced.");
     }
+    if (_TESTING) ESP_LOGI(TAG, "Ended lcd_timeout_task()");
 }
 
 static gptimer_handle_t timer_handle = NULL;
 static void init_timeout() {
+    if (_TESTING) ESP_LOGI(TAG, "In init_timeout()");
     gptimer_config_t timer_config = {};
     timer_config.clk_src = GPTIMER_CLK_SRC_DEFAULT;
     timer_config.direction = GPTIMER_COUNT_UP;
@@ -120,7 +124,9 @@ static void init_timeout() {
 }
 
 static void init_led_pwm() {
-    // Create lcd timeout task for auto-dimming the display with priority=5 
+    if (_TESTING) ESP_LOGI(TAG, "In init_led_pwm()");
+
+    // Create lcd timeout task for auto-dimming the display with priority=5
     xTaskCreate(lcd_timeout_task, "lcd_timeout_task", 2048, NULL, 5, &lcd_timeout_handle);
 
     init_timeout();
@@ -149,7 +155,7 @@ void init_lcd() {
     if (!INCLUDE_LCD) {
         return;
     }
-    if(_TESTING) printf("Info: in start_system_boot()\n");
+    if(_TESTING) ESP_LOGI(TAG, "In start_system_boot()");
 
     gpio_set_level(LCD_CS_PIN, 1);
     gpio_set_level(LCD_DC_RS_PIN, 1);
@@ -400,7 +406,7 @@ static void init_lvgl() {
 }
 
 static void show_boot_screen() {
-    if (_TESTING) printf("Info: In show_boot_screen()\n");
+    if (_TESTING) ESP_LOGI(TAG, "In show_boot_screen()");
 
     turn_on_display();      // starts auto-timeout timer
     lv_init_st7796();       // configure ST7796 registers for data streaming
@@ -472,7 +478,7 @@ static lv_waveform_t *create_waveform_plot(void) {
 
 static lv_waveform_t *update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t new_data_size) {
     if (!waveform) {        // check for null
-        ESP_LOGI(TAG, "Waveform pointer is null. Waveform plot was not updated.");
+        ESP_LOGW(TAG, "Waveform pointer is null. Waveform plot was not updated.");
         return waveform;
     }
     lv_obj_t *chart = waveform->chart;
@@ -491,8 +497,8 @@ static lv_waveform_t *update_waveform_plot(lv_waveform_t *waveform, int32_t *new
 }
 
 static void show_waveform_plots() {
-    if (_TESTING) printf("Info: In show_waveform_plots()\n");
-    // Create waveform plot and initialize waveform if NULL
+    if (_TESTING) ESP_LOGI(TAG, "In show_waveform_plots()");
+    // Initialize waveform if NULL
     if (!waveform) {
         waveform = create_waveform_plot();
     }
@@ -520,7 +526,7 @@ void lvgl_task(void *pvParameters) {
     if (!INCLUDE_LCD) {
         return;
     }
-    if (_TESTING) printf("Info: Started lvgl_task()\n");
+    if (_TESTING) ESP_LOGI(TAG, "Started lvgl_task()");
 
     for( ;; ) {     // loop indefinitely while waiting for new data frames
         lv_timer_handler();     // update display
@@ -544,7 +550,7 @@ void lvgl_task(void *pvParameters) {
     }
 
     // vTaskDelete(NULL);       // End calling task (lvgl_task) if done
-    if (_TESTING) printf("Info: Ended lvgl_task()\n");
+    if (_TESTING) ESP_LOGI(TAG, "Ended lvgl_task()");
 }
 
 

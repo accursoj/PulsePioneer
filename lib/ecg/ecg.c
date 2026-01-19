@@ -32,7 +32,7 @@ void write_ecg_data(uint8_t addr, uint8_t data) {
     if (!INCLUDE_ECG) {
         return;
     }
-    if (_TESTING) printf("Info: In write_ecg_data()\n");
+    if (_TESTING) ESP_LOGI(TAG, "In write_ecg_data()");
 
     spi_transaction_t transaction = {};
     transaction.flags = SPI_TRANS_USE_TXDATA;
@@ -79,7 +79,7 @@ void init_ecg() {
     if (!INCLUDE_ECG) {
         return;
     }
-    if (_TESTING) printf("Info: In init_ecg()\n");
+    if (_TESTING) ESP_LOGI(TAG, "In init_ecg()");
     ecg_host_device = SPI2_HOST;
 
     spi_bus_config_t ecg_bus_config = {};
@@ -219,9 +219,11 @@ void stream_ecg_data() {
     int32_t ch2_raw;
     static int decim = 0;
 
-    if (gpio_get_level(ECG_DRDB_PIN) == 1) {
+    if (gpio_get_level(ECG_DRDB_PIN) == 1) {        // check if Data Raady Data Bus has bee set high (ADS1293 has data to send)
+        // Stream data status, ch1 data, and ch2 data
         ecg_read_sample(&status, &ch1_raw, &ch2_raw);
 
+        // Load the ecg_sample_t struct
         ecg_sample_t sample;
         sample.timestamp_us = esp_timer_get_time();
         sample.data_status = status;
@@ -229,9 +231,11 @@ void stream_ecg_data() {
         sample.ch2 = ch2_raw;
         sample.ch3 = sample.ch1 - sample.ch2;
 
+        // Debug print alarms
         if (_TESTING && gpio_get_level(ECG_ALAB_PIN) == 0) {
             print_alarm_errors();
         }
+        // Check for valid data
         if (sample.data_status != 0) {
             // printf("\n%ld\n%#04x\nCH1:%d\nCH2:%d\nCH3:%d\n", sample.timestamp_us, sample.data_status, sample.ch1, sample.ch2, sample.ch3);
             // printf("\n%ld\nCH1:%d\n", sample.timestamp_us, sample.ch1);
@@ -244,30 +248,33 @@ void stream_ecg_data() {
             // vTaskDelay(pdMS_TO_TICKS(5));
             vTaskDelay(0);
         }
-        if (xQueueSend(ecg_sample_queue, &sample, 0) != pdTRUE && _TESTING) {
-            printf("ECG Data Sample Queue is Full at timestamp:%ld", sample.timestamp_us);
-            return;     // stop streaming if queue is full
+        if (xQueueSend(ecg_sample_queue, &sample, 0) != pdTRUE) {
+            if (_TESTING) ESP_LOGI(TAG, "ECG Data Sample Queue is Full at timestamp:%ld", sample.timestamp_us);
+            
+            // stop streaming if queue is full
+            return;
         }
-    } else {
-        // printf("No data ready.");
     }
     vTaskDelay(0);
 }
 
 void ecg_stream_task(void *pvParameters) {
-    if (_TESTING) printf("Info: Started ecg_stream_task()\n");
+    if (_TESTING) ESP_LOGI(TAG, "Started ecg_stream_task()");
 
-    ecg_sample_queue = xQueueCreate(256, sizeof(ecg_sample_t));      // data queue for asynchronous data processing
+    // Create data queue for asynchronous data processing
+    ecg_sample_queue = xQueueCreate(256, sizeof(ecg_sample_t));
     
     write_ecg_data(0x2F, 0x31); // enable CH2, CH1, and DATA_STATUS for loop read-back mode
     write_ecg_data(0x00, 0x01); // start conversion
 
+    // TODO: Test the removal of this while loop
+    // This may be unnecessarily looping stream_ecg_data() even when the sample queue is full and causing the WDT to timeout due to the repeated loops
     while (1) {
         stream_ecg_data();
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 
-    if (_TESTING) printf("Info: Ended ecg_stream_task()\n");
+    if (_TESTING) ESP_LOGI(TAG, "Ended ecg_stream_task()");
 }
 
 void ecg_power_down() {
