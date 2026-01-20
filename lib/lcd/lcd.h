@@ -4,7 +4,7 @@
 #include "freertos/queue.h"
 #include "driver/gpio.h"
 
-// ENable LCD functionality
+// Enable LCD functionality
 #define INCLUDE_LCD 1
 
 extern const gpio_num_t LED_CS_PIN;

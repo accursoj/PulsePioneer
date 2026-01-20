@@ -32,7 +32,7 @@ void write_ecg_data(uint8_t addr, uint8_t data) {
     if (!INCLUDE_ECG) {
         return;
     }
-    if (_TESTING) ESP_LOGI(TAG, "In write_ecg_data()");
+    // if (_TESTING) ESP_LOGI(TAG, "In write_ecg_data()");
 
     spi_transaction_t transaction = {};
     transaction.flags = SPI_TRANS_USE_TXDATA;
@@ -42,9 +42,9 @@ void write_ecg_data(uint8_t addr, uint8_t data) {
     transaction.tx_data[1] = data;
     ESP_ERROR_CHECK(spi_device_transmit(ecg_handle, &transaction));
 
-    if (_TESTING) {
-        printf("\n%#08x was written to address %#08x.\n", data, addr);
-    }
+    // if (_TESTING) {
+    //     printf("%#08x was written to address %#08x.\n", data, addr);
+    // }
 }
 
 void read_register(uint8_t reg_address, uint8_t reg_i) {
@@ -271,10 +271,11 @@ void ecg_stream_task(void *pvParameters) {
     // This may be unnecessarily looping stream_ecg_data() even when the sample queue is full and causing the WDT to timeout due to the repeated loops
     while (1) {
         stream_ecg_data();
-        vTaskDelay(pdMS_TO_TICKS(1));
+        if (_TESTING) ESP_LOGI(TAG, "Suspending ecg_stream_task()...");
+        vTaskSuspend(NULL);
     }
 
-    if (_TESTING) ESP_LOGI(TAG, "Ended ecg_stream_task()");
+    if (_TESTING) ESP_LOGW(TAG, "Ended ecg_stream_task()");     // this should theoretically never be called
 }
 
 void ecg_power_down() {

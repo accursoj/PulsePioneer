@@ -92,7 +92,7 @@ static void lcd_timeout_task() {
         set_led_pwm(10);
         ESP_LOGI(TAG, "LCD auto-timeout triggered. LCD Brightness has been reduced.");
     }
-    if (_TESTING) ESP_LOGI(TAG, "Ended lcd_timeout_task()");
+    if (_TESTING) ESP_LOGW(TAG, "Ended lcd_timeout_task()");        // this shoudl theoretically never be called
 }
 
 static gptimer_handle_t timer_handle = NULL;
@@ -318,6 +318,7 @@ static void lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
     lcd_send_cmd(0x2C);
 }
 
+// Indicates where incoming pixels should go and what X/Y region should be written to.
 static void lv_lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
     uint8_t data[4];
 
@@ -359,8 +360,54 @@ static uint32_t get_esp_tick(void) {
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
+// static void old_lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *color_map) {
+//     int32_t x1 = area->x1;
+//     int32_t y1 = area->y1;
+//     int32_t x2 = area->x2;
+//     int32_t y2 = area->y2;
+
+//     int32_t width  = x2 - x1 + 1;
+//     int32_t height = y2 - y1 + 1;
+
+//     uint16_t *pixels = (uint16_t *)color_map;
+
+//     for (int32_t y = 0; y < height; y += LINES_PER_DMA) {
+//         int32_t chunk_h = LINES_PER_DMA;
+//         if (y + chunk_h > height) chunk_h = height - y;
+
+//         // Set window for this chunk
+//         lv_lcd_set_window(x1, y1 + y, x2, y1 + y + chunk_h - 1);
+
+//         // Send pixels MSB-first (RGB)
+//         for (int32_t i = 0; i < width * chunk_h; i++) {
+//             uint16_t c = pixels[y * width + i];
+//             uint8_t data[2] = { c >> 8, c & 0xFF }; // MSB first
+//             lcd_send_data(data, 2);
+//         }
+//         // vTaskDelay(pdMS_TO_TICKS(5));       // reduces screen reload tear
+//         vTaskDelay(0);
+//     }
+
+//     lv_display_flush_ready(disp);
+// }
+
+static void lcd_send_line_dma(const uint16_t *pixels, int width)
+{
+    gpio_set_level(LCD_DC_RS_PIN, 1);  // data mode
+
+    spi_transaction_t t = {
+        .tx_buffer = pixels,
+        .length = width * 16,   // one line
+    };
+
+    ESP_ERROR_CHECK(spi_device_transmit(lcd_spi_handle, &t));
+}
+
 // Main LVGL callback for data streaming
-static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *color_map) {
+static void lvgl_flush_cb(lv_display_t *disp,
+                          const lv_area_t *area,
+                          uint8_t *color_map)
+{
     int32_t x1 = area->x1;
     int32_t y1 = area->y1;
     int32_t x2 = area->x2;
@@ -372,20 +419,30 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *co
     uint16_t *pixels = (uint16_t *)color_map;
 
     for (int32_t y = 0; y < height; y += LINES_PER_DMA) {
+
         int32_t chunk_h = LINES_PER_DMA;
-        if (y + chunk_h > height) chunk_h = height - y;
-
-        // Set window for this chunk
-        lv_lcd_set_window(x1, y1 + y, x2, y1 + y + chunk_h - 1);
-
-        // Send pixels MSB-first (RGB)
-        for (int32_t i = 0; i < width * chunk_h; i++) {
-            uint16_t c = pixels[y * width + i];
-            uint8_t data[2] = { c >> 8, c & 0xFF }; // MSB first
-            lcd_send_data(data, 2);
+        if (y + chunk_h > height) {
+            chunk_h = height - y;
         }
-        // vTaskDelay(pdMS_TO_TICKS(5));       // reduces screen reload tear
-        vTaskDelay(0);
+
+        // Set LCD window for this chunk
+        lv_lcd_set_window(
+            x1,
+            y1 + y,
+            x2,
+            y1 + y + chunk_h - 1
+        );
+
+        // Send line-by-line using DMA
+        for (int32_t line = 0; line < chunk_h; line++) {
+            lcd_send_line_dma(
+                pixels + (y + line) * width,
+                width
+            );
+        }
+
+        // Allows FreeRTOS to run higher-priority tasks if necessary
+        taskYIELD();
     }
 
     lv_display_flush_ready(disp);
@@ -401,10 +458,16 @@ static void init_lvgl() {
 
     lv_display_t *disp = lv_display_create(LCD_H_RES, LCD_V_RES);
 
+    // LVGL will render small rectangular regions using LV_DISPLAY_RENDER_MODE_PARTIAL
+    // This calls lvgl_flush_cb() with an area (lv_area_t) and a pointer to pixels only for that area
     lv_display_set_buffers(disp, buf1, buf2, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(disp, lvgl_flush_cb);
 }
 
+/*
+Begins by starting auto-timeout timer, configuring ST7796 registers for data streaming, and initializing LVGL services.
+Turns off LCD backlight, creates black background, draws text, and animates a loading bar.
+*/ 
 static void show_boot_screen() {
     if (_TESTING) ESP_LOGI(TAG, "In show_boot_screen()");
 
@@ -412,26 +475,81 @@ static void show_boot_screen() {
     lv_init_st7796();       // configure ST7796 registers for data streaming
     init_lvgl();
 
+    // Turn off backlight
+    set_led_pwm(0);     
+
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
-    // -------------------- TEXT TEST --------------------
-    lv_obj_t *label = lv_label_create(lv_screen_active());
-    lv_label_set_text(label, "LVGL OK");
-    lv_obj_set_style_text_color(label, lv_color_white(), 0);
-    lv_obj_align(label, LV_ALIGN_CENTER, 0, -40);
+    lv_obj_t *text = lv_label_create(lv_screen_active());
+    lv_label_set_text(text, "Booting PulsePioneer...");
+    lv_obj_set_style_text_color(text, lv_color_white(), 0);
+    lv_obj_align(text, LV_ALIGN_CENTER, 0, -40);
 
-    // -------------------- RECTANGLE TEST --------------------
-    lv_obj_t *rect = lv_obj_create(lv_screen_active());
-    lv_obj_set_size(rect, 120, 60);
-    lv_obj_align(rect, LV_ALIGN_CENTER, 0, 40);
+    // Update screen
+    lv_timer_handler();
 
-    lv_obj_set_style_bg_color(rect, lv_color_hex(0x00FF00), LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(rect, LV_OPA_COVER, LV_STATE_DEFAULT);
+    // Turn on backlight
+    set_led_pwm(100);
 
-    set_led_pwm(100); // turn on backlight
+    lv_obj_t *boot_bar = lv_bar_create(lv_screen_active());
+    lv_obj_set_size(boot_bar, 240, 30);
+    lv_obj_align(boot_bar, LV_ALIGN_CENTER, 0, 40);
+
+    // Bar objects have a default range of 0 to 100
+    // Update the loading bar every 100 milliseconds
+    for (int i = 0; i < 100; i+=10) {
+        lv_bar_set_value(boot_bar, i, LV_ANIM_OFF);
+        lv_timer_handler();
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    // lv_obj_t *rect = lv_obj_create(lv_screen_active());
+    // lv_obj_set_size(rect, 240, 30);
+    // lv_obj_align(rect, LV_ALIGN_CENTER, 0, 40);
+    // lv_obj_set_style_bg_color(rect, lv_color_white(), 0);
+    // lv_obj_set_style_bg_opa(rect, LV_OPA_COVER, 0);
+    // lv_obj_set_style_border_width(rect, 0, 0);
+
+    // lv_timer_handler();
+
+    // set_led_pwm(100); // turn on backlight
+
 }
+
+static void show_main_menu() {
+    if (_TESTING) ESP_LOGI(TAG, "In show_main_menu()");
+
+    set_led_pwm(0);
+
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0xc3eefa), 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+
+    lv_obj_t *text = lv_label_create(lv_screen_active());
+    lv_label_set_text(text, "Welcome to PulsePioneer");
+    lv_obj_set_style_text_color(text, lv_color_black(), 0);
+    lv_obj_align(text, LV_ALIGN_TOP_LEFT, 10, 0);
+
+    // Create header line style
+    static lv_style_t header_line_style;
+    lv_style_init(&header_line_style);
+    lv_style_set_line_width(&header_line_style, 5);
+
+    // Create header line
+    lv_point_precise_t header_line_points[] = {{0, 0}, {120, 0}};
+    lv_obj_t *header_line = lv_line_create(lv_screen_active());
+    lv_line_set_points(header_line, header_line_points, 2);
+    lv_obj_add_style(header_line, &header_line_style, 0);
+    // lv_obj_align(header_line, LV_ALIGN_TOP_LEFT, 10, 0);
+    lv_obj_align_to(header_line, text, LV_ALIGN_OUT_LEFT_BOTTOM, 0, 10);
+
+    lv_timer_handler();
+
+    set_led_pwm(100);
+}
+
 typedef struct {
     lv_obj_t *chart;
     lv_chart_series_t *ch1;
@@ -536,6 +654,8 @@ void lvgl_task(void *pvParameters) {
             case 0:
                 // Render boot screen
                 show_boot_screen();
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                show_main_menu();
                 system_state = 1;
                 break;
             case 2:
@@ -547,10 +667,11 @@ void lvgl_task(void *pvParameters) {
                 // Wait for new data frames
                 break;
         }
+        // if (_TESTING) ESP_LOGI(TAG, "Suspending lvgl_task()...");
+        // vTaskSuspend(NULL);
     }
 
-    // vTaskDelete(NULL);       // End calling task (lvgl_task) if done
-    if (_TESTING) ESP_LOGI(TAG, "Ended lvgl_task()");
+    if (_TESTING) ESP_LOGW(TAG, "Ended lvgl_task()");       // this should theoretically never be called
 }
 
 
