@@ -468,7 +468,7 @@ static void init_lvgl() {
 Begins by starting auto-timeout timer, configuring ST7796 registers for data streaming, and initializing LVGL services.
 Turns off LCD backlight, creates black background, draws text, and animates a loading bar.
 */ 
-static void show_boot_screen() {
+static lv_obj_t *show_boot_screen() {
     if (_TESTING) ESP_LOGI(TAG, "In show_boot_screen()");
 
     turn_on_display();      // starts auto-timeout timer
@@ -499,35 +499,51 @@ static void show_boot_screen() {
 
     // Bar objects have a default range of 0 to 100
     // Update the loading bar every 100 milliseconds
-    for (int i = 0; i < 100; i+=10) {
+    for (int i = 0; i <= 100; i+=10) {
         lv_bar_set_value(boot_bar, i, LV_ANIM_OFF);
         lv_timer_handler();
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
-    // lv_obj_t *rect = lv_obj_create(lv_screen_active());
-    // lv_obj_set_size(rect, 240, 30);
-    // lv_obj_align(rect, LV_ALIGN_CENTER, 0, 40);
-    // lv_obj_set_style_bg_color(rect, lv_color_white(), 0);
-    // lv_obj_set_style_bg_opa(rect, LV_OPA_COVER, 0);
-    // lv_obj_set_style_border_width(rect, 0, 0);
-
-    // lv_timer_handler();
-
-    // set_led_pwm(100); // turn on backlight
-
+    return scr;
 }
 
-static void show_main_menu() {
+// Synchronously removes all child objects from the parent object scr.
+// Updates the display when finished.
+static void clean_screen(lv_obj_t *scr) {
+    if (_TESTING) ESP_LOGI(TAG, "In clean_screen");
+    uint32_t child_count = lv_obj_get_child_count(scr);
+
+    if (_TESTING) ESP_LOGI(TAG, "%u child objects will be deleted...", child_count);
+
+    for (int32_t i = 0; i < child_count; i++) {
+        // Get youngest child object
+        // The youngest child object is always at idx=0 until it is deleted. At that point, the next youngest assumes idx=0.
+        lv_obj_t *child_obj = lv_obj_get_child(scr, 0);
+
+        if (child_obj) {        // if not null
+            // Delete the child object
+            lv_obj_delete(child_obj);
+        } 
+    }
+
+    if (_TESTING) ESP_LOGI(TAG, "Number of child objects after deletion: %u", lv_obj_get_child_count(scr));
+
+    // Update screen
+    lv_timer_handler();
+}
+
+static void show_main_menu(lv_obj_t *scr) {
     if (_TESTING) ESP_LOGI(TAG, "In show_main_menu()");
 
     set_led_pwm(0);
-
-    lv_obj_t *scr = lv_scr_act();
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0xc3eefa), 0);
+    clean_screen(scr);
+    
+    // lv_obj_t *scr = lv_scr_act();
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0xfaee3c), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
-    lv_obj_t *text = lv_label_create(lv_screen_active());
+    lv_obj_t *text = lv_label_create(scr);
     lv_label_set_text(text, "Welcome to PulsePioneer");
     lv_obj_set_style_text_color(text, lv_color_black(), 0);
     lv_obj_align(text, LV_ALIGN_TOP_LEFT, 10, 0);
@@ -539,7 +555,7 @@ static void show_main_menu() {
 
     // Create header line
     lv_point_precise_t header_line_points[] = {{0, 0}, {120, 0}};
-    lv_obj_t *header_line = lv_line_create(lv_screen_active());
+    lv_obj_t *header_line = lv_line_create(scr);
     lv_line_set_points(header_line, header_line_points, 2);
     lv_obj_add_style(header_line, &header_line_style, 0);
     // lv_obj_align(header_line, LV_ALIGN_TOP_LEFT, 10, 0);
@@ -650,22 +666,24 @@ void lvgl_task(void *pvParameters) {
         lv_timer_handler();     // update display
         vTaskDelay(pdMS_TO_TICKS(20));
 
-        switch (system_state) {
-            case 0:
-                // Render boot screen
-                show_boot_screen();
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                show_main_menu();
-                system_state = 1;
-                break;
-            case 2:
-                // Render waveform plots
-                show_waveform_plots();
-                system_state = 1;
-                break;
-            default:
-                // Wait for new data frames
-                break;
+        lv_obj_t *scr = NULL;
+        switch (system_state)
+        {
+        case 0:
+            // Render boot screen
+            scr = show_boot_screen();
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            show_main_menu(scr);
+            system_state = 1;
+            break;
+        case 2:
+            // Render waveform plots
+            show_waveform_plots();
+            system_state = 1;
+            break;
+        default:
+            // Wait for new data frames
+            break;
         }
         // if (_TESTING) ESP_LOGI(TAG, "Suspending lvgl_task()...");
         // vTaskSuspend(NULL);
