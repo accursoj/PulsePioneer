@@ -1,11 +1,13 @@
 #include "lcd.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
+#include "driver/ledc.h"
+#include "driver/gptimer.h"
 // #include "esp_lcd_io_spi.h"
 // #include "esp_lcd_st7796.h"
 // #include "esp_lcd_panel_ops.h"
-#include "driver/ledc.h"
-#include "driver/gptimer.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_vendor.h"
 #include <string.h>
 #include <lvgl.h>
 #include "esp_timer.h"
@@ -13,7 +15,10 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "esp_task_wdt.h"
+#include "demos/lv_demos.h"
+
 #include "ecg.h"
+#include "waveform.h"
 
 #include "esp_log.h"
 static const char *TAG = "lcd.c";
@@ -92,7 +97,7 @@ static void lcd_timeout_task() {
         set_led_pwm(10);
         ESP_LOGI(TAG, "LCD auto-timeout triggered. LCD Brightness has been reduced.");
     }
-    if (_TESTING) ESP_LOGW(TAG, "Ended lcd_timeout_task()");        // this shoudl theoretically never be called
+    if (_TESTING) ESP_LOGW(TAG, "Ended lcd_timeout_task()");        // this should theoretically never be called
 }
 
 static gptimer_handle_t timer_handle = NULL;
@@ -167,9 +172,9 @@ void init_lcd() {
 
     spi_bus_config_t lcd_bus_config = {};
     lcd_bus_config.mosi_io_num = LCD_SDI_PIN;
-    lcd_bus_config.miso_io_num = LCD_SDO_PIN;
+    lcd_bus_config.miso_io_num = -1;//LCD_SDO_PIN;
     lcd_bus_config.sclk_io_num = LCD_SCK_PIN;
-    lcd_bus_config.max_transfer_sz = LCD_H_RES * LCD_V_RES * 2; // LCD_H_RES * LINES_PER_DMA * sizeof(uint16_t);
+    lcd_bus_config.max_transfer_sz = LCD_H_RES * LINES_PER_DMA * 2;
     lcd_bus_config.isr_cpu_id = ESP_INTR_CPU_AFFINITY_0;
 
     // Not used
@@ -186,7 +191,7 @@ void init_lcd() {
     vTaskDelay(50 / portTICK_PERIOD_MS);
 
     spi_device_interface_config_t lcd_interface_config = {};
-    lcd_interface_config.clock_speed_hz = PIXEL_CLK_FREQ;     // 20 MHz
+    lcd_interface_config.clock_speed_hz = PIXEL_CLK_FREQ * 2;     // 40 MHz (max speed possible when using GPIO matrix)
     lcd_interface_config.mode = 3;
     lcd_interface_config.spics_io_num = LCD_CS_PIN;
     lcd_interface_config.queue_size = 6;
@@ -243,6 +248,9 @@ static void lcd_send_cmd(uint8_t cmd)
     transaction.tx_buffer = &cmd;
 
     spi_device_transmit(lcd_spi_handle, &transaction);
+    // spi_transaction_t *result;
+    // spi_device_queue_trans(lcd_spi_handle, &transaction, portMAX_DELAY);
+    // spi_device_get_trans_result(lcd_spi_handle, &result, portMAX_DELAY);
 }
 
 // Simple test function for writing to lcd registers
@@ -253,30 +261,36 @@ static void lcd_send_data(const uint8_t *data, int len) {
 
     gpio_set_level(LCD_DC_RS_PIN, 1);
     spi_transaction_t transaction = {};
-    transaction.length = len * 8;       // convert to bytes to bits
+    transaction.length = len * 8;       // convert from bytes to bits
     transaction.tx_buffer = data;
 
     spi_device_transmit(lcd_spi_handle, &transaction);
+    // spi_transaction_t *result;
+    // spi_device_queue_trans(lcd_spi_handle, &transaction, portMAX_DELAY);
+    // spi_device_get_trans_result(lcd_spi_handle, &result, portMAX_DELAY);
 }
 
-// Simple test function for writing to lcd registers
-static void lcd_send_data16(uint16_t color) {
-    uint8_t d[2] = { color >> 8, color & 0xFF };
-    lcd_send_data(d, 2);
-}
+// // Simple test function for writing to lcd registers
+// static void lcd_send_data16(uint16_t color) {
+//     uint8_t d[2] = { color >> 8, color & 0xFF };
+//     lcd_send_data(d, 2);
+// }
 
 // Configure ST7796 registers before streaming display data
 static void lv_init_st7796() {
     lcd_reset();
 
     lcd_send_cmd(0x11);
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(120));
 
     lcd_send_cmd(0x3A);
     lcd_send_data((uint8_t[]){0x55}, 1);
 
     lcd_send_cmd(0x36);
-    lcd_send_data((uint8_t[]){0x28}, 1);
+    lcd_send_data((uint8_t[]){0x28}, 1);        // Set screen rotation +90 and set color order to BGR
+
+    lcd_send_cmd(0xB1);
+    lcd_send_data((uint8_t[]){0x00, 0x00}, 2);      // Target 60-70 Hz frame rate
 
     lcd_send_cmd(0x29);     // display on
 }
@@ -342,19 +356,19 @@ static void lv_lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1
     lcd_send_cmd(0x2C);
 }
 
-// Simple display test without LVGL
-void run_display_test() {
-    init_st7796();
+// // Simple display test without LVGL
+// void run_display_test() {
+//     init_st7796();
     
-    lcd_set_window(50, 50, 150, 100);
+//     lcd_set_window(50, 50, 150, 100);
 
-    uint16_t color = 0x07FF; // cyan
-    for (int i = 0; i < (100 * 50); i++) {
-        lcd_send_data16(color);
-    }
-    printf("Test shape drawn.");
+//     uint16_t color = 0x07FF; // cyan
+//     for (int i = 0; i < (100 * 50); i++) {
+//         lcd_send_data16(color);
+//     }
+//     printf("Test shape drawn.");
 
-}
+// }
 
 static uint32_t get_esp_tick(void) {
     return (uint32_t)(esp_timer_get_time() / 1000);
@@ -391,16 +405,22 @@ static uint32_t get_esp_tick(void) {
 //     lv_display_flush_ready(disp);
 // }
 
-static void lcd_send_line_dma(const uint16_t *pixels, int width)
+static void lcd_send_line_dma(uint16_t *pixels, int width)
 {
     gpio_set_level(LCD_DC_RS_PIN, 1);  // data mode
+    
+    // Swap endian-ness of the data to match the data controller requirements
+    lv_draw_sw_rgb565_swap(pixels, width);
 
     spi_transaction_t t = {
         .tx_buffer = pixels,
         .length = width * 16,   // one line
     };
 
-    ESP_ERROR_CHECK(spi_device_transmit(lcd_spi_handle, &t));
+    spi_device_transmit(lcd_spi_handle, &t);
+    // spi_transaction_t *result;
+    // spi_device_queue_trans(lcd_spi_handle, &t, portMAX_DELAY);
+    // spi_device_get_trans_result(lcd_spi_handle, &result, portMAX_DELAY);
 }
 
 // Main LVGL callback for data streaming
@@ -441,8 +461,6 @@ static void lvgl_flush_cb(lv_display_t *disp,
             );
         }
 
-        // Allows FreeRTOS to run higher-priority tasks if necessary
-        taskYIELD();
     }
 
     lv_display_flush_ready(disp);
@@ -508,10 +526,16 @@ static lv_obj_t *show_boot_screen() {
     return scr;
 }
 
-// Synchronously removes all child objects from the parent object scr.
-// Updates the display when finished.
+/*
+Removes all styles from the parent object scr.
+Synchronously removes all child objects from the parent object scr.
+Updates the display when finished.
+*/
 static void clean_screen(lv_obj_t *scr) {
     if (_TESTING) ESP_LOGI(TAG, "In clean_screen");
+
+    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+
     uint32_t child_count = lv_obj_get_child_count(scr);
 
     if (_TESTING) ESP_LOGI(TAG, "%u child objects will be deleted...", child_count);
@@ -566,92 +590,15 @@ static void show_main_menu(lv_obj_t *scr) {
     set_led_pwm(100);
 }
 
-typedef struct {
-    lv_obj_t *chart;
-    lv_chart_series_t *ch1;
-    lv_chart_series_t *ch2;
-    lv_chart_series_t *ch3;
-} lv_waveform_t;
+static void show_test_animation(lv_obj_t *scr) {
+    if (_TESTING) ESP_LOGI(TAG, "In show_test_animation()");
 
-static lv_waveform_t *waveform = NULL;
+    clean_screen(scr);
 
-static lv_waveform_t *create_waveform_plot(void) {
-    static lv_waveform_t waveform = {};
-    waveform.chart = NULL;
-    waveform.ch1 = NULL;
-    waveform.ch2 = NULL;
-    waveform.ch3 = NULL;
+    lv_demo_benchmark();
 
-    // Remove all child objects from the active screen
-    lv_obj_clean(lv_screen_active());
-
-    // Initialize chart object
-    lv_obj_t *chart;
-    chart = lv_chart_create(lv_screen_active());
-    lv_obj_set_size(chart, 400, 300);       // currently takes up a subwindow of the display
-    lv_obj_center(chart);
-    lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
-    
-    lv_chart_series_t *ch1 = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_YELLOW), LV_CHART_AXIS_PRIMARY_Y);
-    // lv_chart_series_t *ch2 = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_GREEN), LV_CHART_AXIS_PRIMARY_Y);
-    // lv_chart_series_t *ch3 = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_LIGHT_BLUE), LV_CHART_AXIS_PRIMARY_Y);
-
-    lv_chart_refresh(chart);
-    lv_timer_handler();     // update active screen
-
-    waveform.chart = chart;
-    waveform.ch1 = ch1;
-    // waveform.ch2 = ch2;
-    // waveform.ch3 = ch3;
-
-    // Create pointer for waveform data
-    lv_waveform_t *wave_ptr = &waveform;
-
-    return wave_ptr;
 }
 
-static lv_waveform_t *update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t new_data_size) {
-    if (!waveform) {        // check for null
-        ESP_LOGW(TAG, "Waveform pointer is null. Waveform plot was not updated.");
-        return waveform;
-    }
-    lv_obj_t *chart = waveform->chart;
-
-    uint16_t i;
-    for (i = 0; i < new_data_size; i++) {
-        lv_chart_set_next_value(chart, waveform->ch1, *(new_data + i));
-    }
-
-    lv_chart_refresh(chart);
-    lv_timer_handler();     // update active screen
-
-    waveform->chart = chart;        // update waveform struct
-
-    return waveform;
-}
-
-static void show_waveform_plots() {
-    if (_TESTING) ESP_LOGI(TAG, "In show_waveform_plots()");
-    // Initialize waveform if NULL
-    if (!waveform) {
-        waveform = create_waveform_plot();
-    }
-
-    // Update each waveform plot with queued data until queue is empty
-    ecg_sample_t *sample_buffer;
-    while (xQueueReceive(ecg_sample_queue, &sample_buffer, 0) != pdFALSE)
-    {
-        waveform = update_waveform_plot(waveform, &(sample_buffer->ch1), sizeof(sample_buffer->ch1));
-        waveform = update_waveform_plot(waveform, &(sample_buffer->ch2), sizeof(sample_buffer->ch2));
-        waveform = update_waveform_plot(waveform, &(sample_buffer->ch3), sizeof(sample_buffer->ch3));
-
-        // Render waveform
-        lv_timer_handler();
-        vTaskDelay(0);
-    }
-
-    ESP_LOGI(TAG, "ecg_sample_queue is empty. Returning from show_waveform_plots()...");
-}
 
 // ------------------------------
 // Main LVGL task
@@ -662,28 +609,32 @@ void lvgl_task(void *pvParameters) {
     }
     if (_TESTING) ESP_LOGI(TAG, "Started lvgl_task()");
 
+    lv_obj_t *scr = NULL;
+
     for( ;; ) {     // loop indefinitely while waiting for new data frames
         lv_timer_handler();     // update display
         vTaskDelay(pdMS_TO_TICKS(20));
 
-        lv_obj_t *scr = NULL;
-        switch (system_state)
-        {
-        case 0:
-            // Render boot screen
-            scr = show_boot_screen();
-            vTaskDelay(pdMS_TO_TICKS(1000));
-            show_main_menu(scr);
-            system_state = 1;
-            break;
-        case 2:
-            // Render waveform plots
-            show_waveform_plots();
-            system_state = 1;
-            break;
-        default:
-            // Wait for new data frames
-            break;
+        switch (system_state) {
+            case 0:
+                // Render boot screen
+                scr = show_boot_screen();
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                // Render main display
+                show_main_menu(scr);
+                system_state = 2;
+                break;
+            case 2:
+                // Render waveform plots
+                // show_waveform_plots(scr);
+                system_state = 5;
+                break;
+            case 5:
+                show_test_animation(scr);
+                system_state = 1;
+            default:
+                // Wait for new data frames
+                break;
         }
         // if (_TESTING) ESP_LOGI(TAG, "Suspending lvgl_task()...");
         // vTaskSuspend(NULL);
