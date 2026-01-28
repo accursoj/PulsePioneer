@@ -109,17 +109,11 @@ void start_system_boot() {
     vTaskDelay(1000 / portTICK_PERIOD_MS);              // pause for one second
 
     esp_sleep_wakeup_cause_t deep_wakeup_cause = esp_sleep_get_wakeup_cause();
-    if (deep_wakeup_cause != ESP_SLEEP_WAKEUP_EXT0) {
-        start_deep_sleep();
-    }
+    if (deep_wakeup_cause != ESP_SLEEP_WAKEUP_EXT0) start_deep_sleep();
 
-    if (INCLUDE_ECG) {
-        init_ecg();
-    }
-    if (INCLUDE_LCD) {
-        init_lcd();
-    }
-
+    if (INCLUDE_ECG) init_ecg();
+    if (INCLUDE_LCD) init_lcd();
+    
     show_rgb_led(0, 255, 0, RGB_LED_BRIGHTNESS);        // green
 }
 
