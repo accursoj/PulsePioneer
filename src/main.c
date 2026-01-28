@@ -5,12 +5,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_sleep.h"
-#include "ecg.h"
-#include "lcd.h"
 #include "led_strip.h"
 #include "led_strip_rmt.h"
 #include "sdkconfig.h"
 #include "esp_log.h"
+
+#include "ecg.h"
+#include "lcd.h"
 
 static const char *TAG = "main.c";
 
@@ -113,7 +114,7 @@ void start_system_boot() {
 
     if (INCLUDE_ECG) init_ecg();
     if (INCLUDE_LCD) init_lcd();
-    
+
     show_rgb_led(0, 255, 0, RGB_LED_BRIGHTNESS);        // green
 }
 

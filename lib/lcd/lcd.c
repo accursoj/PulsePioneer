@@ -355,7 +355,7 @@ static void show_main_menu(lv_obj_t *scr) {
     set_led_pwm(100);
 
     // Show for 5 seconds
-    vTaskDelay(pdMS_TO_TICKS(5000));
+    vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
 /*
@@ -428,11 +428,15 @@ void lvgl_task(void *pvParameters) {
 
                 // Render main display
                 show_main_menu(scr);
-                system_state = 2;
+                system_state = 3;
                 break;
             case 2:
                 // Render waveform plots
                 show_waveform_plots(scr);
+                system_state = 3;
+                break;
+            case 3:
+                test_waveform_plot();
                 system_state = 1;
                 break;
             case 5:

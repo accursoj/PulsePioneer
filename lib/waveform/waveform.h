@@ -13,4 +13,6 @@ typedef struct {
 
 void show_waveform_plots(lv_obj_t *);
 
+void test_waveform_plot(void);
+
 #endif //waveform.h
