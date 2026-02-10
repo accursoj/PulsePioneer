@@ -122,21 +122,21 @@ void init_ecg() {
 
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    if (_TESTING) {
-        read_register(0x00, 1);
-        read_register(0x01, 1);
-        read_register(0x02, 1);
-        read_register(0x0A, 1);
-        read_register(0x0C, 1);
-        read_register(0x12, 1);
-        read_register(0x13, 1);
-        read_register(0x14, 1);
-        read_register(0x21, 1);
-        read_register(0x22, 1);
-        read_register(0x23, 1);
-        read_register(0x27, 1);
-        read_register(0x2F, 1);
-    }
+    // if (_TESTING) {
+    //     read_register(0x00, 1);
+    //     read_register(0x01, 1);
+    //     read_register(0x02, 1);
+    //     read_register(0x0A, 1);
+    //     read_register(0x0C, 1);
+    //     read_register(0x12, 1);
+    //     read_register(0x13, 1);
+    //     read_register(0x14, 1);
+    //     read_register(0x21, 1);
+    //     read_register(0x22, 1);
+    //     read_register(0x23, 1);
+    //     read_register(0x27, 1);
+    //     read_register(0x2F, 1);
+    // }
 }
 
 void ecg_read_sample(uint8_t *status, int32_t *ch1, int32_t *ch2) {
@@ -196,14 +196,14 @@ void print_alarm_errors() {
     ESP_ERROR_CHECK(spi_device_transmit(ecg_handle, &transaction));
 
     uint8_t alarm = rx_buffer_data[1];
-    if (alarm & (0x1 << 0)) printf("CMOR\n");
-    if (alarm & (0x1 << 1)) printf("RLDRAIL\n");
-    if (alarm & (0x1 << 2)) printf("BATLOW\n");
-    if (alarm & (0x1 << 3)) printf("LEADOFF\n");
-    if (alarm & (0x1 << 4)) printf("CH1ERR\n");
-    if (alarm & (0x1 << 5)) printf("CH2ERR\n");
-    if (alarm & (0x1 << 6)) printf("CH3ERR\n");
-    if (alarm & (0x1 << 7)) printf("SYNCEDGEERR\n");
+    if (alarm & (0x1 << 0)) ESP_LOGW(TAG, "CMOR");
+    if (alarm & (0x1 << 1)) ESP_LOGW(TAG, "RLDRAIL");
+    if (alarm & (0x1 << 2)) ESP_LOGW(TAG, "BATLOW");
+    if (alarm & (0x1 << 3)) ESP_LOGW(TAG, "LEADOFF");
+    if (alarm & (0x1 << 4)) ESP_LOGW(TAG, "CH1ERR");
+    if (alarm & (0x1 << 5)) ESP_LOGW(TAG, "CH2ERR");
+    if (alarm & (0x1 << 6)) ESP_LOGW(TAG, "CH3ERR");
+    if (alarm & (0x1 << 7)) ESP_LOGW(TAG, "SYNCEDGEERR");
     vTaskDelay(pdMS_TO_TICKS(1));
 }
 

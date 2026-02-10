@@ -68,6 +68,7 @@ static void enc_read(lv_indev_t *indev, lv_indev_data_t *data) {
     // }
     // if (xQueueReceive(indev_queue, &enc_event, 0) != pdFALSE) {
     if (xQueueReceive(forwarded_enc_queue, &enc_event, 0) != pdFALSE) {
+        reset_display_timeout();
         if (enc_event.type != RE_ET_CHANGED) {
             data->enc_diff = 0;
         } else {

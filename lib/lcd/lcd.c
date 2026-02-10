@@ -280,9 +280,10 @@ static void init_encoder(void) {
 
 // Abstract function to reset the LCD auto-dimming timer
 // init_led_pwm() must be called before this function in order to initialize timer_handle
-static void reset_display_timeout() {
+void reset_display_timeout() {
     // Reset timer for lcd auto-timeout
     ESP_ERROR_CHECK(gptimer_set_raw_count(timer_handle, 0));
+    set_led_pwm(100);
 }
 
 // void load_system_state(system_state_t state) {
@@ -296,7 +297,6 @@ static void reset_display_timeout() {
 void load_system_state(system_state_t state) {
     if (system_state != state) {
         system_state = state;
-        reset_display_timeout();
 
         lv_obj_set_flag(main_scr, LV_OBJ_FLAG_HIDDEN, true);
         lv_obj_set_flag(ecg_scr, LV_OBJ_FLAG_HIDDEN, true);
@@ -331,8 +331,6 @@ static void create_boot_screen() {
     lv_obj_align(boot_bar, LV_ALIGN_CENTER, 0, 40);
 }
 
-
-
 // ------------------------------
 // Main Screen
 // ------------------------------
@@ -347,7 +345,7 @@ static void create_main_screen(void) {
     lv_obj_align(main_scr, LV_ALIGN_CENTER, 0, 0);
 
     lv_obj_t *text = lv_label_create(main_scr);
-    lv_label_set_text(text, "Welcome to PulsePioneer\n\n<Insert System Setup Instructions Here>");
+    lv_label_set_text(text, "Welcome to PulsePioneer\n\n<Insert Setup Instructions Here>");
     lv_obj_set_style_text_color(text, lv_color_black(), 0);
     lv_obj_set_style_text_align(text, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(text, LV_ALIGN_CENTER, 0, 0);
@@ -532,6 +530,19 @@ void init_lcd() {
     init_lvgl();
 }
 
+static void plot_ecg_data(void) {
+    const uint8_t max_samples_per_loop = 5;
+    ecg_sample_t sample_buffer;
+
+    for (uint8_t i = 0; i < max_samples_per_loop; i++) {
+        if (xQueueReceive(ecg_sample_queue, &sample_buffer, 0) != pdFALSE) {
+            waveform_ptr = update_waveform_plot(waveform_ptr, &(sample_buffer.ch1), 1);
+        } else {
+            break;
+        }
+    }
+}
+
 // ------------------------------
 // Main LVGL task
 // ------------------------------
@@ -542,7 +553,6 @@ typedef enum {
     LVGL_CMD_SHOW_ECG,
     LVGL_CMD_RUN_WAVEFORM_TEST
 } lvgl_cmd_t;
-
 void lvgl_task(void *pvParameters) {
     if (_TESTING) ESP_LOGI(TAG, "Started lvgl_task()");
 
@@ -551,8 +561,10 @@ void lvgl_task(void *pvParameters) {
     }
     lvgl_cmd_t cmd;
 
+    const TickType_t delay = pdMS_TO_TICKS(10);
+
     for (;;) {
-        if (xQueueReceive(lvgl_cmd_queue, &cmd, pdMS_TO_TICKS(5))) {
+        if (xQueueReceive(lvgl_cmd_queue, &cmd, 0)) {
             switch (cmd) {
                 case LVGL_CMD_SHOW_BOOT:
                     show_boot_screen();
@@ -571,8 +583,11 @@ void lvgl_task(void *pvParameters) {
             }
         }
 
+        if (waveform_ptr && ecg_sample_queue) {
+            plot_ecg_data();
+        }
         lv_timer_handler();
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(delay);
     }
 }
 

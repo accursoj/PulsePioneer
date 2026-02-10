@@ -13,8 +13,8 @@ typedef struct {
 
 extern bool broke_update_loop_flag;
 
-void show_waveform_plots(lv_obj_t *);
+lv_waveform_t *update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t new_data_size);
 
-bool test_waveform_plot(lv_waveform_t *);
+bool test_waveform_plot(lv_waveform_t *waveform);
 
 #endif //waveform.h

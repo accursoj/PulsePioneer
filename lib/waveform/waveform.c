@@ -56,7 +56,7 @@ Updates the LVGL timer handler and yields the task.
 */
 static int32_t y_range_max = 100;
 static int32_t y_range_min = 0;
-static lv_waveform_t *update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t new_data_size) {
+lv_waveform_t *update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t new_data_size) {
     if (!waveform) {        // check for null
         ESP_LOGW(TAG, "Waveform pointer is null. Waveform plot was not updated.");
         return waveform;
