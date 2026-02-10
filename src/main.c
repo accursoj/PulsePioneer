@@ -21,6 +21,11 @@ static const char *TAG = "main.c";
 
 #define _TESTING 1
 
+static TaskHandle_t ecg_stream_task_handle = NULL;
+static TaskHandle_t lvgl_task_handle = NULL;
+static TaskHandle_t input_task_handle = NULL;
+static TaskHandle_t gui_task_handle = NULL;
+
 void init_gpio() {
     if (_TESTING) ESP_LOGI(TAG, "In init_gpio()");
     gpio_config_t io_conf = {};
@@ -124,8 +129,10 @@ void power_down() {
     // TODO: safe power down for all modules
 }
 
-static TaskHandle_t ecg_stream_task_handle = NULL;
-static TaskHandle_t lvgl_task_handle = NULL;
+TaskHandle_t get_gui_task_handle(void) {
+    return gui_task_handle;
+}
+
 void app_main()
 {
     if (_TESTING) ESP_LOGI(TAG, "In app_main()");
@@ -136,11 +143,10 @@ void app_main()
         xTaskCreatePinnedToCore(ecg_stream_task, "ecg_stream_task", 4096, NULL, 4, &ecg_stream_task_handle, 1);
     }
     
-    // Create LVGL display task with priority=3 on cpu=1
-    // Reasoning: watchdog timeout when set to CPU=0 (potentially because CPU 0 is needed for internal functions?)
-    // Info: still needs to be tested with simultaneous ecg_stream_task also on CPU=1
     if (INCLUDE_LCD) {
         xTaskCreatePinnedToCore(lvgl_task, "lvgl_task", 8192, NULL, 3, &lvgl_task_handle, 1);
+        xTaskCreatePinnedToCore(input_task, "input_task", 4096, NULL, 10, &input_task_handle, 1);
+        xTaskCreatePinnedToCore(gui_task, "gui_task", 8192, NULL, 5, &gui_task_handle, 1);
     }
 
     show_rgb_led(0, 0, 255, RGB_LED_BRIGHTNESS); // blue
@@ -148,6 +154,9 @@ void app_main()
     vTaskDelay(pdMS_TO_TICKS(1000));
     if (INCLUDE_ECG && ecg_stream_task_handle) ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark2(ecg_stream_task_handle) returned %ld", uxTaskGetStackHighWaterMark2(ecg_stream_task_handle));
     if (INCLUDE_LCD && lvgl_task_handle) ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark2(lvgl_task_handle) returned %ld", uxTaskGetStackHighWaterMark2(lvgl_task_handle));
+    if (INCLUDE_LCD && input_task_handle) ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark2(input_task_handle) returned %ld", uxTaskGetStackHighWaterMark2(input_task_handle));
+    if (INCLUDE_LCD && gui_task_handle) ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark2(gui_task_handle) returned %ld", uxTaskGetStackHighWaterMark2(gui_task_handle));
+
 
     // Wait indefinitely while tasks run
     while (1) {

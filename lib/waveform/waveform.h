@@ -11,8 +11,10 @@ typedef struct {
     lv_chart_series_t *ch3;
 } lv_waveform_t;
 
+extern bool broke_update_loop_flag;
+
 void show_waveform_plots(lv_obj_t *);
 
-void test_waveform_plot(void);
+bool test_waveform_plot(lv_waveform_t *);
 
 #endif //waveform.h
