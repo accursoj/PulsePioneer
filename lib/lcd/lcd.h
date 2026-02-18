@@ -40,6 +40,8 @@ void input_task(void *pvParameters);
 
 TaskHandle_t get_gui_task_handle(void);
 
+TaskHandle_t get_ecg_stream_task_handle(void);
+
 void reset_display_timeout(void);
 
 void load_system_state(system_state_t state);

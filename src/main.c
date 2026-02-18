@@ -133,6 +133,10 @@ TaskHandle_t get_gui_task_handle(void) {
     return gui_task_handle;
 }
 
+TaskHandle_t get_ecg_stream_task_handle(void) {
+    return ecg_stream_task_handle;
+}
+
 void app_main()
 {
     if (_TESTING) ESP_LOGI(TAG, "In app_main()");

@@ -1,6 +1,7 @@
 #include "esp_timer.h"
 #include "waveform.h"
 #include "ecg.h"
+#include <stdlib.h>
 
 #define _TESTING 1
 
@@ -8,54 +9,123 @@ static const char *TAG = "waveform.c";
 
 bool broke_update_loop_flag = false;
 
-// static lv_waveform_t *waveform = NULL;
+#define ECG_CALIBRATION_SAMPLES     5000
+#define ECG_AXIS_PADDING_PERCENT    0.05f
 
-// // extern QueueHandle_t ecg_sample_queue;
-// /*
-// Creates a LVGL waveform plot on the current active screen.
-// Returns the LVGL waveform plot as a lv_waveform_t pointer.
-// */
-// static lv_waveform_t *create_waveform_plot(void) {
-//     static lv_waveform_t waveform = {};
-//     waveform.chart = NULL;
-//     waveform.ch1 = NULL;
-//     waveform.ch2 = NULL;
-//     waveform.ch3 = NULL;
+#define ECG_Y_TICK_COUNT 2   // Only min and max
 
-//     // Remove all child objects from the active screen
-//     lv_obj_clean(lv_screen_active());
+void create_chart_scale(lv_waveform_t *waveform) {
+    waveform->y_scale = lv_scale_create(lv_obj_get_parent(waveform->chart));
 
-//     // Initialize chart object
-//     lv_obj_t *chart;
-//     chart = lv_chart_create(lv_screen_active());
-//     lv_obj_set_size(chart, 400, 300);       // currently takes up a subwindow of the display
-//     lv_obj_center(chart);
-//     lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
-    
-//     lv_chart_series_t *ch1 = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_YELLOW), LV_CHART_AXIS_PRIMARY_Y);
-//     // lv_chart_series_t *ch2 = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_GREEN), LV_CHART_AXIS_PRIMARY_Y);
-//     // lv_chart_series_t *ch3 = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_LIGHT_BLUE), LV_CHART_AXIS_PRIMARY_Y);
+    lv_obj_set_size(waveform->y_scale,
+                    40,
+                    lv_obj_get_height(waveform->chart));
 
-//     lv_chart_refresh(chart);
-//     lv_timer_handler();     // update active screen
+    lv_obj_align_to(waveform->y_scale,
+                    waveform->chart,
+                    LV_ALIGN_OUT_LEFT_MID,
+                    -5,
+                    0);
 
-//     waveform.chart = chart;
-//     waveform.ch1 = ch1;
-//     // waveform.ch2 = ch2;
-//     // waveform.ch3 = ch3;
+    // Vertical orientation (ticks on left side)
+    lv_scale_set_mode(waveform->y_scale, LV_SCALE_MODE_VERTICAL_LEFT);
 
-//     // Create pointer for waveform data
-//     lv_waveform_t *wave_ptr = &waveform;
+    // Only two ticks (min and max)
+    lv_scale_set_total_tick_count(waveform->y_scale, ECG_Y_TICK_COUNT);
 
-//     return wave_ptr;
-// }
+    // Every tick is major
+    lv_scale_set_major_tick_every(waveform->y_scale, 1);
+
+    // Show labels
+    lv_scale_set_label_show(waveform->y_scale, true);
+}
+
+static bool ecg_axis_locked = false;
+static uint16_t ecg_sample_count = 0;
+static int32_t ecg_min = INT32_MAX;
+static int32_t ecg_max = INT32_MIN;
+static void update_ecg_fixed_axis(lv_waveform_t *waveform, int32_t val) {
+    if (ecg_axis_locked) {
+        return;  // Axis already determined
+    }
+
+    lv_obj_t *chart = waveform->chart;
+
+    // Hide chart and scale while calibrating
+    lv_obj_set_flag(chart, LV_OBJ_FLAG_HIDDEN, true);
+    lv_obj_set_flag(waveform->y_scale, LV_OBJ_FLAG_HIDDEN, true);
+
+    // Update min/max during calibration phase
+    if (val < ecg_min) ecg_min = val;
+    if (val > ecg_max) ecg_max = val;
+
+    ecg_sample_count++;
+
+    // Lock axis once enough samples have been collected
+    if (ecg_sample_count >= ECG_CALIBRATION_SAMPLES) {
+        ESP_LOGI(TAG, "Calibrating ECG plot...");
+
+        int32_t range = abs(ecg_max - ecg_min);
+        if (range == 0) range = 1;
+
+        int32_t padding = (int32_t)(range * ECG_AXIS_PADDING_PERCENT);
+
+        int32_t axis_min = ecg_min - padding;
+        int32_t axis_max = ecg_max + padding;
+
+        // Set axis range
+        lv_chart_set_axis_range(chart,
+                                LV_CHART_AXIS_PRIMARY_Y,
+                                axis_min,
+                                axis_max);
+
+        // Set Y-axis ticks
+        lv_scale_set_range(waveform->y_scale,
+                                axis_min,
+                                axis_max);
+
+        // lv_timer_handler();
+
+        ecg_axis_locked = true;
+
+        // Show chart
+        lv_obj_set_flag(chart, LV_OBJ_FLAG_HIDDEN, false);
+        lv_obj_set_flag(waveform->y_scale, LV_OBJ_FLAG_HIDDEN, false);
+    }
+
+}
+
+void new_update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t new_data_size) {
+
+    if (!waveform) {        // check for null
+        ESP_LOGW(TAG, "Waveform pointer is null. Waveform plot was not updated.");
+        return;
+    }
+
+    lv_obj_t *chart = waveform->chart;
+
+    for (uint16_t i = 0; i < new_data_size; i++) {
+
+        int32_t val = new_data[i];
+
+        lv_chart_set_next_value(chart, waveform->ch1, val);
+
+        update_ecg_fixed_axis(waveform, val);
+    }
+
+}
+
 
 /*
 Checks that the passed waveform pointer has been initialized. Use create_waveform_plot() prior to calling this function.
-Updates the LVGL timer handler and yields the task.
+Updates the LVGL timer handler. Must be called from within the LVGL task.
 */
-static int32_t y_range_max = 100;
-static int32_t y_range_min = 0;
+static int32_t init_y_max = 6080000;
+static int32_t init_y_min = 6010000;
+static int32_t y_range_max = 6080000;
+static int32_t y_range_min = 6010000;
+static int32_t counter = 0;
+
 lv_waveform_t *update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t new_data_size) {
     if (!waveform) {        // check for null
         ESP_LOGW(TAG, "Waveform pointer is null. Waveform plot was not updated.");
@@ -67,6 +137,11 @@ lv_waveform_t *update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, 
     for (i = 0; i < new_data_size; i++) {
         lv_chart_set_next_value(chart, waveform->ch1, *(new_data + i));
 
+        if (counter > 100) {
+            // counter = 0;
+            lv_chart_set_axis_range(chart, LV_CHART_AXIS_PRIMARY_Y, init_y_min, init_y_max);
+        }
+
         if (*new_data > y_range_max) {
             y_range_max = *new_data;
             lv_chart_set_axis_range(chart, LV_CHART_AXIS_PRIMARY_Y, y_range_min, y_range_max);
@@ -74,41 +149,15 @@ lv_waveform_t *update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, 
             y_range_min = *new_data;
             lv_chart_set_axis_range(chart, LV_CHART_AXIS_PRIMARY_Y, y_range_min, y_range_max);
         }
+
         lv_timer_handler();
+        counter++;
     }
 
     waveform->chart = chart;        // update waveform struct
     
     return waveform;
 }
-
-/*
-Should be called from lvgl_main_task() as a state of the GUI.
-Creates an lv_waveform_t pointer.
-Calls update_waveform_plot() to add queued data to the waveform pointer.
-Updates the screen after the waveform has been updated by each element of queued data.
-*/
-// void show_waveform_plots(lv_obj_t *scr) {
-//     if (_TESTING) ESP_LOGI(TAG, "In show_waveform_plots()");
-//     // Initialize waveform if NULL
-//     if (!waveform) {
-//         waveform = create_waveform_plot();
-//     }
-
-//     // Update each waveform plot with queued data until queue is empty
-//     ecg_sample_t *sample_buffer;
-//     if (ecg_sample_queue) {
-//         while (xQueueReceive(ecg_sample_queue, &sample_buffer, 0) != pdFALSE)
-//         {
-//             waveform = update_waveform_plot(waveform, &(sample_buffer->ch1), sizeof(sample_buffer->ch1));
-//             waveform = update_waveform_plot(waveform, &(sample_buffer->ch2), sizeof(sample_buffer->ch2));
-//             waveform = update_waveform_plot(waveform, &(sample_buffer->ch3), sizeof(sample_buffer->ch3));
-//         }
-//     }
-
-//     ESP_LOGI(TAG, "ecg_sample_queue is empty or is NULL. Returning from show_waveform_plots()...");
-// }
-
 
 QueueHandle_t waveform_test_queue = NULL;
 /*
@@ -155,6 +204,9 @@ bool test_waveform_plot(lv_waveform_t *waveform) {
 
         waveform = update_waveform_plot(waveform, &(sample_buffer.ch1), 1);
     }
+
+    // Clear chart data
+    lv_chart_set_all_values(waveform->chart, waveform->ch1, LV_CHART_POINT_NONE);
 
     if (_TESTING) ESP_LOGI(TAG, "Updated waveform");
 

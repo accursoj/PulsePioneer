@@ -61,6 +61,7 @@ static TaskHandle_t lcd_timeout_handle = NULL;
 static gptimer_handle_t timer_handle = NULL;
 
 TaskHandle_t gui_task_handle = NULL;
+TaskHandle_t ecg_stream_task_handle = NULL;
 
 char system_state;
 
@@ -132,7 +133,7 @@ static void init_timeout() {
 
     gptimer_alarm_config_t timer_alarm_config = {};
     if (_TESTING) {
-        timer_alarm_config.alarm_count = 60000000;       // 60,000,000 ticks (1 minute)
+        timer_alarm_config.alarm_count = 600000000;       // 60,000,000 ticks (1 minute) -> 10 minutes
     }
     else {
         timer_alarm_config.alarm_count = 600000000;       // 600,000,000 ticks (10 minutes)
@@ -386,6 +387,7 @@ static void create_ECG_screen(uint8_t num_charts) {
     waveform.ch1 = NULL;
     waveform.ch2 = NULL;
     waveform.ch3 = NULL;
+    waveform.y_scale = NULL;
 
     ecg_scr = lv_obj_create(scr_container);
     lv_obj_set_size(ecg_scr, lv_pct(100), lv_pct(100));
@@ -398,8 +400,12 @@ static void create_ECG_screen(uint8_t num_charts) {
     lv_obj_set_size(waveform.chart, lv_pct(100), lv_pct(100));       // currently takes up a subwindow of the display
     lv_obj_center(waveform.chart);
     lv_chart_set_type(waveform.chart, LV_CHART_TYPE_LINE);
+
+    lv_chart_set_point_count(waveform.chart, 100);
     
     waveform_ptr = &waveform;
+
+    create_chart_scale(waveform_ptr);
 
     if (num_charts > 0 && num_charts < 4) {
         while (num_charts-- != 0) {
@@ -476,6 +482,9 @@ static void show_ECG_screen(void) {
     // }
 
     lv_obj_set_flag(ecg_scr, LV_OBJ_FLAG_HIDDEN, false);
+
+    ESP_LOGI(TAG, "First resume of ecg_stream_task...");
+    vTaskResume(ecg_stream_task_handle);
 }
 
 // ------------------------------
@@ -530,14 +539,21 @@ void init_lcd() {
     init_lvgl();
 }
 
+static bool sent_task_resume = false;
+const uint8_t max_samples_per_loop = 5;
 static void plot_ecg_data(void) {
-    const uint8_t max_samples_per_loop = 5;
     ecg_sample_t sample_buffer;
-
     for (uint8_t i = 0; i < max_samples_per_loop; i++) {
         if (xQueueReceive(ecg_sample_queue, &sample_buffer, 0) != pdFALSE) {
-            waveform_ptr = update_waveform_plot(waveform_ptr, &(sample_buffer.ch1), 1);
+            // waveform_ptr = update_waveform_plot(waveform_ptr, &(sample_buffer.ch1), 1);
+            new_update_waveform_plot(waveform_ptr, &(sample_buffer.ch1), 1);
+            sent_task_resume = false;       // the task has resumed in order to get more data to this point
         } else {
+            if (!sent_task_resume) {
+                // ESP_LOGI(TAG, "Resuming ecg_stream_task...");
+                vTaskResume(ecg_stream_task_handle);
+                sent_task_resume = true;
+            }
             break;
         }
     }
@@ -555,6 +571,8 @@ typedef enum {
 } lvgl_cmd_t;
 void lvgl_task(void *pvParameters) {
     if (_TESTING) ESP_LOGI(TAG, "Started lvgl_task()");
+
+    ecg_stream_task_handle = get_ecg_stream_task_handle();
 
     if (!lvgl_cmd_queue) {
         lvgl_cmd_queue = xQueueCreate(4, sizeof(lvgl_cmd_t));
@@ -582,7 +600,7 @@ void lvgl_task(void *pvParameters) {
                     break;
             }
         }
-
+        
         if (waveform_ptr && ecg_sample_queue) {
             plot_ecg_data();
         }

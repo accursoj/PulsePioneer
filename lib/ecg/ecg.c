@@ -12,7 +12,7 @@ static const char *TAG = "ecg.c";
 spi_host_device_t ecg_host_device;
 spi_device_handle_t ecg_handle;
 
-// Queue for all ECG samples to be processed (not implemented)
+// Queue for all ECG samples to be processed
 QueueHandle_t ecg_sample_queue = NULL;
 
 const gpio_num_t ECG_SCLK_PIN = 9;
@@ -122,21 +122,21 @@ void init_ecg() {
 
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    // if (_TESTING) {
-    //     read_register(0x00, 1);
-    //     read_register(0x01, 1);
-    //     read_register(0x02, 1);
-    //     read_register(0x0A, 1);
-    //     read_register(0x0C, 1);
-    //     read_register(0x12, 1);
-    //     read_register(0x13, 1);
-    //     read_register(0x14, 1);
-    //     read_register(0x21, 1);
-    //     read_register(0x22, 1);
-    //     read_register(0x23, 1);
-    //     read_register(0x27, 1);
-    //     read_register(0x2F, 1);
-    // }
+    if (_TESTING) {
+        read_register(0x00, 1);
+        read_register(0x01, 1);
+        read_register(0x02, 1);
+        read_register(0x0A, 1);
+        read_register(0x0C, 1);
+        read_register(0x12, 1);
+        read_register(0x13, 1);
+        read_register(0x14, 1);
+        read_register(0x21, 1);
+        read_register(0x22, 1);
+        read_register(0x23, 1);
+        read_register(0x27, 1);
+        read_register(0x2F, 1);
+    }
 }
 
 void ecg_read_sample(uint8_t *status, int32_t *ch1, int32_t *ch2) {
@@ -246,10 +246,10 @@ void stream_ecg_data() {
         // Check for valid data
         if (sample.data_status != 0) {
             // printf("\n%ld\n%#04x\nCH1:%d\nCH2:%d\nCH3:%d\n", sample.timestamp_us, sample.data_status, sample.ch1, sample.ch2, sample.ch3);
-            // printf("\n%ld\nCH1:%d\n", sample.timestamp_us, sample.ch1);
+            // printf("\n%ld\nCH1:%ld\n", sample.timestamp_us, sample.ch1);
             if (_TESTING) {
                 if (++decim >= 5) {
-                    printf("%ld,%ld\n", sample.timestamp_us, sample.ch1);
+                    printf("%ld %ld\n", sample.timestamp_us, sample.ch1);
                     decim = 0;
                 }
             }
@@ -258,23 +258,19 @@ void stream_ecg_data() {
             xQueueSend(ecg_sample_queue, &sample, 0);
             if (full_queue_flag) full_queue_flag = false;
         } else {
-            if (_TESTING) ESP_LOGI(TAG, "ECG Data Sample Queue is Full at timestamp:%ld", sample.timestamp_us);
+            // if (_TESTING) ESP_LOGI(TAG, "ECG Data Sample Queue is Full at timestamp:%ld", sample.timestamp_us);
             full_queue_flag = true;
             // stop streaming if queue is full
             return;
         }
-        // if (xQueueSend(ecg_sample_queue, &sample, 0) != pdTRUE) {
-        //     if (_TESTING) ESP_LOGI(TAG, "ECG Data Sample Queue is Full at timestamp:%ld", sample.timestamp_us);
-            
-        //     full_queue_flag = true;
-            
-        //     // stop streaming if queue is full
-        //     return;
-        // }
+
     }
     vTaskDelay(0);
 }
 
+// ------------------------
+// Main ECG Streaming Task
+// ------------------------
 void ecg_stream_task(void *pvParameters) {
     if (_TESTING) ESP_LOGI(TAG, "Started ecg_stream_task()");
 
@@ -284,11 +280,17 @@ void ecg_stream_task(void *pvParameters) {
     write_ecg_data(0x2F, 0x31); // enable CH2, CH1, and DATA_STATUS for loop read-back mode
     write_ecg_data(0x00, 0x01); // start conversion
 
+    ESP_LOGI(TAG, "First suspend of ecg stream task...");
+    vTaskSuspend(NULL);
     for ( ;; ) {
         if (!full_queue_flag && !error_flag) {
             stream_ecg_data();
+        } else {
+            // ESP_LOGI(TAG, "Suspending ecg stream task...");
+            vTaskSuspend(NULL);
+            full_queue_flag = false;
         }
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 
     if (_TESTING) ESP_LOGW(TAG, "Ended ecg_stream_task()");     // this should theoretically never be called
