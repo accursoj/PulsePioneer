@@ -5,6 +5,8 @@
 #include "freertos/queue.h"
 #include <stdint.h>
 #include "driver/gpio.h"
+#include "led_strip.h"
+#include "led_strip_rmt.h"
 
 // Enable ECG functionality
 #define INCLUDE_ECG 1
@@ -29,8 +31,12 @@ typedef struct
 // Queue handle for streaming samples
 extern QueueHandle_t ecg_sample_queue;
 
+extern led_strip_handle_t board_led_handle;
+
 // Initialize ECG SPI interface and ADS1293 registers
 void init_ecg(void);
+
+void show_rgb_led(uint32_t color_r, uint32_t color_g, uint32_t color_b, uint32_t brightness);
 
 // Write single register to ADS1293
 // void write_ecg_data(uint8_t addr, uint8_t data);

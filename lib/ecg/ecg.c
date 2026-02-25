@@ -25,6 +25,8 @@ const gpio_num_t ECG_DRDB_PIN = 14;
 static bool full_queue_flag = false;
 static bool error_flag = false;
 
+led_strip_handle_t board_led_handle;
+
 // Debug setting
 #define _TESTING 1
 
@@ -112,11 +114,14 @@ void init_ecg() {
     write_ecg_data(0x0A, 0x07); // enable common-mode detector on IN1, IN2, IN3
     write_ecg_data(0x0C, 0x04); // internally connect output of RLD amplifier to IN4
     write_ecg_data(0x12, 0x04); // use external crystal oscilaltor
+    // write_ecg_data(0x13, 0x0);  // disable high-resolution mode
     write_ecg_data(0x13, 0x03); // set CH1 and CH2 to high-resolution mode
     write_ecg_data(0x14, 0x24); // disable CH3 signal path
     write_ecg_data(0x21, 0x02); // R2_decimation=5 for all channels
     write_ecg_data(0x22, 0x02); // R3_decimation=6 for CH1
     write_ecg_data(0x23, 0x02); // R3_decimation=6 for CH2
+    // write_ecg_data(0x22, 0x08); // R3_decimation=12 for CH1
+    // write_ecg_data(0x23, 0x08); // R3_decimation=12 for CH2
     write_ecg_data(0x27, 0x08); // set DRDYB source to CH1
     write_ecg_data(0x2F, 0x30); // enable CH1 and CH2 ECGs for loop read-back mode
 
@@ -207,6 +212,19 @@ void print_alarm_errors() {
     vTaskDelay(pdMS_TO_TICKS(1));
 }
 
+
+void show_rgb_led(uint32_t color_r, uint32_t color_g, uint32_t color_b, uint32_t brightness) {
+    // if (_TESTING) ESP_LOGI(TAG, "In show_rgb_led()");
+    ESP_ERROR_CHECK(led_strip_set_pixel(
+        board_led_handle,
+        (0 * brightness) / 255,
+        (color_r * brightness) / 255,
+        (color_g * brightness) / 255,
+        (color_b * brightness) / 255));
+    ESP_ERROR_CHECK(led_strip_refresh(board_led_handle));
+}
+
+
 /*
 Checks if the ADS1293 has data ready to send to the ESP.
 Reads the available sample.
@@ -238,31 +256,42 @@ void stream_ecg_data() {
         // Debug print alarms
         if (_TESTING && gpio_get_level(ECG_ALAB_PIN) == 0) {
             print_alarm_errors();
+            show_rgb_led(255, 0, 0, 25);
             error_flag = true;
             return;
         } else {
-            if (error_flag) error_flag = false;
+            if (error_flag) {
+                error_flag = false;
+                show_rgb_led(0, 255, 0, 25);
+            }
         }
         // Check for valid data
         if (sample.data_status != 0) {
-            // printf("\n%ld\n%#04x\nCH1:%d\nCH2:%d\nCH3:%d\n", sample.timestamp_us, sample.data_status, sample.ch1, sample.ch2, sample.ch3);
-            // printf("\n%ld\nCH1:%ld\n", sample.timestamp_us, sample.ch1);
             if (_TESTING) {
-                if (++decim >= 5) {
-                    printf("%ld %ld\n", sample.timestamp_us, sample.ch1);
+                if (++decim >= 64) {        //5
+                    // printf("%ld %ld\n", sample.timestamp_us, sample.ch1);
                     decim = 0;
+                    if (uxQueueSpacesAvailable(ecg_sample_queue)) {     // check for queue space
+                        xQueueSend(ecg_sample_queue, &sample, 0);
+                        if (full_queue_flag) full_queue_flag = false;
+                    } else {
+                        if (_TESTING) ESP_LOGI(TAG, "ECG Data Sample Queue is Full at timestamp:%ld", sample.timestamp_us);
+                        full_queue_flag = true;
+                        // stop streaming if queue is full
+                        return;
+                    }
                 }
             }
         }
-        if (uxQueueSpacesAvailable(ecg_sample_queue)) {     // check for queue space
-            xQueueSend(ecg_sample_queue, &sample, 0);
-            if (full_queue_flag) full_queue_flag = false;
-        } else {
-            // if (_TESTING) ESP_LOGI(TAG, "ECG Data Sample Queue is Full at timestamp:%ld", sample.timestamp_us);
-            full_queue_flag = true;
-            // stop streaming if queue is full
-            return;
-        }
+        // if (uxQueueSpacesAvailable(ecg_sample_queue)) {     // check for queue space
+        //     xQueueSend(ecg_sample_queue, &sample, 0);
+        //     if (full_queue_flag) full_queue_flag = false;
+        // } else {
+        //     // if (_TESTING) ESP_LOGI(TAG, "ECG Data Sample Queue is Full at timestamp:%ld", sample.timestamp_us);
+        //     // full_queue_flag = true;
+        //     // stop streaming if queue is full
+        //     return;
+        // }
 
     }
     vTaskDelay(0);
@@ -275,7 +304,11 @@ void ecg_stream_task(void *pvParameters) {
     if (_TESTING) ESP_LOGI(TAG, "Started ecg_stream_task()");
 
     // Create data queue for asynchronous data processing
-    ecg_sample_queue = xQueueCreate(256, sizeof(ecg_sample_t));
+    ecg_sample_queue = xQueueCreate(1024, sizeof(ecg_sample_t));        // ecg_sample_t is 17 bytes
+    if (!ecg_sample_queue) {
+        ESP_LOGE(TAG, "ECG sample queue could not be created.");
+        vTaskDelete(NULL);
+    }
     
     write_ecg_data(0x2F, 0x31); // enable CH2, CH1, and DATA_STATUS for loop read-back mode
     write_ecg_data(0x00, 0x01); // start conversion
@@ -283,12 +316,21 @@ void ecg_stream_task(void *pvParameters) {
     ESP_LOGI(TAG, "First suspend of ecg stream task...");
     vTaskSuspend(NULL);
     for ( ;; ) {
-        if (!full_queue_flag && !error_flag) {
+        if (!full_queue_flag) {
             stream_ecg_data();
         } else {
-            // ESP_LOGI(TAG, "Suspending ecg stream task...");
+            show_rgb_led(255, 255, 0, 25);
             vTaskSuspend(NULL);
+            show_rgb_led(0, 255, 0, 25);
             full_queue_flag = false;
+        } 
+        if (error_flag) {
+            vTaskDelay(pdMS_TO_TICKS(1000));        // wiat before re-checking status
+            write_ecg_data(0x00, 0x00); // stop lingering conversions
+            write_ecg_data(0x2F, 0x31); // enable CH2, CH1, and DATA_STATUS for loop read-back mode
+            write_ecg_data(0x00, 0x01); // start conversion
+
+            ESP_LOGI(TAG, "Rechecking alarms...");
         }
         vTaskDelay(pdMS_TO_TICKS(1));
     }

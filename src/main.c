@@ -12,6 +12,7 @@
 
 #include "ecg.h"
 #include "lcd.h"
+#include "gui.h"
 
 static const char *TAG = "main.c";
 
@@ -65,7 +66,7 @@ void init_gpio() {
     ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(POWER_PIN));
 }
 
-static led_strip_handle_t board_led_handle;
+// static led_strip_handle_t board_led_handle;
 void init_rgb_indicator(void) {
     if (_TESTING) ESP_LOGI(TAG, "In init_rgb_indicator()");
     led_strip_config_t strip_config = {};
@@ -81,16 +82,16 @@ void init_rgb_indicator(void) {
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &strip_rmt_config, &board_led_handle));
 }
 
-void show_rgb_led(uint32_t color_r, uint32_t color_g, uint32_t color_b, uint32_t brightness) {
-    if (_TESTING) ESP_LOGI(TAG, "In show_rgb_led()");
-    ESP_ERROR_CHECK(led_strip_set_pixel(
-        board_led_handle,
-        (0 * brightness) / 255,
-        (color_r * brightness) / 255,
-        (color_g * brightness) / 255,
-        (color_b * brightness) / 255));
-    ESP_ERROR_CHECK(led_strip_refresh(board_led_handle));
-}
+// void show_rgb_led(uint32_t color_r, uint32_t color_g, uint32_t color_b, uint32_t brightness) {
+//     if (_TESTING) ESP_LOGI(TAG, "In show_rgb_led()");
+//     ESP_ERROR_CHECK(led_strip_set_pixel(
+//         board_led_handle,
+//         (0 * brightness) / 255,
+//         (color_r * brightness) / 255,
+//         (color_g * brightness) / 255,
+//         (color_b * brightness) / 255));
+//     ESP_ERROR_CHECK(led_strip_refresh(board_led_handle));
+// }
 
 void start_deep_sleep() {
     if (_TESTING) ESP_LOGI(TAG, "In start_deep_sleep()");
@@ -129,13 +130,13 @@ void power_down() {
     // TODO: safe power down for all modules
 }
 
-TaskHandle_t get_gui_task_handle(void) {
-    return gui_task_handle;
-}
+// TaskHandle_t get_gui_task_handle(void) {
+//     return gui_task_handle;
+// }
 
-TaskHandle_t get_ecg_stream_task_handle(void) {
-    return ecg_stream_task_handle;
-}
+// TaskHandle_t get_ecg_stream_task_handle(void) {
+//     return ecg_stream_task_handle;
+// }
 
 void app_main()
 {
@@ -144,16 +145,23 @@ void app_main()
 
     // Create ECG streaming task with priority=4 on cpu=1
     if (INCLUDE_ECG) {
-        xTaskCreatePinnedToCore(ecg_stream_task, "ecg_stream_task", 4096, NULL, 4, &ecg_stream_task_handle, 1);
+        if (xTaskCreatePinnedToCore(ecg_stream_task, "ecg_stream_task", 8192, NULL, 4, &ecg_stream_task_handle, 0) != pdPASS) {
+            ESP_LOGE(TAG, "ECG stream task could not be created.");
+        } else {
+            pass_ecg_stream_task_handle(&ecg_stream_task_handle);
+        }
     }
     
+    // stack size is in words (4 bytes)
     if (INCLUDE_LCD) {
         xTaskCreatePinnedToCore(lvgl_task, "lvgl_task", 8192, NULL, 3, &lvgl_task_handle, 1);
         xTaskCreatePinnedToCore(input_task, "input_task", 4096, NULL, 10, &input_task_handle, 1);
-        xTaskCreatePinnedToCore(gui_task, "gui_task", 8192, NULL, 5, &gui_task_handle, 1);
-    }
+        xTaskCreatePinnedToCore(gui_task, "gui_task", 2048, NULL, 5, &gui_task_handle, 1);
+        
+        pass_gui_task_handle(&gui_task_handle);
+    }   
 
-    show_rgb_led(0, 0, 255, RGB_LED_BRIGHTNESS); // blue
+    show_rgb_led(0, 255, 0, RGB_LED_BRIGHTNESS); // green
 
     vTaskDelay(pdMS_TO_TICKS(1000));
     if (INCLUDE_ECG && ecg_stream_task_handle) ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark2(ecg_stream_task_handle) returned %ld", uxTaskGetStackHighWaterMark2(ecg_stream_task_handle));

@@ -9,10 +9,13 @@ Functions related to creating and controlling the LVGL graphical user interface.
 #define _TESTING 1
 
 lv_obj_t *scr_container = NULL;
+lv_obj_t *ecg_scr_label;
+
+static lv_waveform_t *waveform_ptr = NULL;
+static TaskHandle_t ecg_stream_task_handle = NULL;
 
 static lv_obj_t *root_scr = NULL;
 static lv_obj_t *sidebar = NULL;
-// static QueueHandle_t indev_queue = NULL;
 static rotary_encoder_event_t enc_event;
 static lv_indev_t *enc_dev = NULL;
 static lv_group_t *sidebar_group = NULL;
@@ -20,8 +23,20 @@ static lv_style_t def_item_style;
 static lv_style_t hover_item_style;
 static bool styles_initialized = false;
 
+static lv_obj_t *boot_bar = NULL;
+static lv_obj_t *boot_scr = NULL;
+lv_obj_t *main_scr = NULL;
+lv_obj_t *ecg_scr = NULL;
+
 const char *TAG = "gui.c";
 
+void pass_ecg_stream_task_handle(TaskHandle_t *handle) {
+    ecg_stream_task_handle = *handle;
+}
+
+TaskHandle_t get_ecg_stream_task_handle() {
+    return ecg_stream_task_handle;
+}
 
 void create_root_screen(void) {
     root_scr = lv_obj_create(NULL);
@@ -41,7 +56,7 @@ lv_obj_t *get_root_screen(void) {
     return root_scr;
 }
 
-void create_scr_container(void) {
+static void create_scr_container(void) {
     if (!scr_container) {
         if (!root_scr) {
             create_root_screen();
@@ -56,7 +71,6 @@ void create_scr_container(void) {
         lv_obj_remove_flag(scr_container, LV_OBJ_FLAG_SCROLLABLE);
     }
 }
-
 
 /*
 Callback function for an encoder-based LVGL input device.
@@ -241,14 +255,200 @@ void create_sidebar(void) {
     }
 }
 
-/*
-Receive encoder event from a hardware input queue and adds it to the queue for lv_indev events
-*/
-// void lv_indev_pass_enc_event(rotary_encoder_event_t *enc_event) {
-//     if (_TESTING) ESP_LOGI(TAG, "In lv_indev_pass_enc_event()");
 
-//     if (!indev_queue) {
-//         indev_queue = xQueueCreate(8, sizeof(rotary_encoder_event_t));
-//     }
-//     xQueueSend(indev_queue, enc_event, 0);
-// }
+
+// -------------------------
+// Boot Screen
+// -------------------------
+static void create_boot_screen() {
+    if (_TESTING) ESP_LOGI(TAG, "In create_boot_screen()");   
+    
+    boot_scr = lv_obj_create(NULL);
+
+    lv_obj_set_style_bg_color(boot_scr, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(boot_scr, LV_OPA_COVER, 0);
+    lv_obj_align(boot_scr, LV_ALIGN_LEFT_MID, 0, 0);
+    
+    lv_obj_t *text = lv_label_create(boot_scr);
+    lv_label_set_text(text, "Booting PulsePioneer...");
+    lv_obj_set_style_text_color(text, lv_color_white(), 0);
+    lv_obj_align(text, LV_ALIGN_CENTER, 0, -40);
+    
+    boot_bar = lv_bar_create(boot_scr);
+    lv_obj_set_size(boot_bar, 240, 30);
+    lv_obj_align(boot_bar, LV_ALIGN_CENTER, 0, 40);
+}
+
+/*
+Increments the value of the boot bar and calls boot_bar_completed_cb when done.
+*/
+static void start_boot_bar_animation() {
+    if (_TESTING) ESP_LOGI(TAG, "In show_boot_bar_animation()");
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, boot_bar);
+    lv_anim_set_values(&a, 0, 100);
+    lv_anim_set_time(&a, 1000);
+    lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_bar_set_value);
+    lv_anim_set_completed_cb(&a, (lv_anim_completed_cb_t)boot_bar_completed_cb);
+    lv_anim_start(&a);
+}
+
+/*
+Turns on LCD backlight, loads the boot screen object, and starts the boot bar animation.
+*/
+void show_boot_screen() {
+    if (_TESTING) ESP_LOGI(TAG, "In show_boot_screen()");   
+    
+    // Initialize LVGL objects for boot screen
+    create_boot_screen();
+    // Turn on LCD backlight
+    set_led_pwm(100);
+    // Show boot screen
+    lv_screen_load(boot_scr);
+    // Activate boot bar animation
+    // Enters main screen upon completion
+    start_boot_bar_animation();
+}
+
+// ------------------------------
+// Main Screen
+// ------------------------------
+static void create_main_screen(void) {
+    if (_TESTING) ESP_LOGI(TAG, "In create_main_screen()");
+
+    main_scr = lv_obj_create(scr_container);
+
+    lv_obj_set_style_bg_color(main_scr, lv_color_hex(0xd4f8fc), 0);
+    lv_obj_set_style_bg_opa(main_scr, LV_OPA_COVER, 0);
+    lv_obj_set_size(main_scr, lv_pct(100), lv_pct(100));
+    lv_obj_align(main_scr, LV_ALIGN_CENTER, 0, 0);
+
+    lv_obj_t *text = lv_label_create(main_scr);
+    lv_label_set_text(text, "Welcome to PulsePioneer\n\n<Insert Setup Instructions Here>");
+    lv_obj_set_style_text_color(text, lv_color_black(), 0);
+    lv_obj_set_style_text_align(text, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(text, LV_ALIGN_CENTER, 0, 0);
+
+    lv_obj_add_flag(main_scr, LV_OBJ_FLAG_HIDDEN);
+}
+
+void show_main_screen(void) {
+    if (_TESTING) ESP_LOGI(TAG, "In show_main_menu()");
+
+    // Create screen if not previously created
+    if (!main_scr) {
+        create_main_screen();
+    }
+
+    // Show the screen
+    lv_obj_set_flag(main_scr, LV_OBJ_FLAG_HIDDEN, false);
+}
+
+
+// ------------------------------
+// ECG Screen
+// ------------------------------
+/*
+Use to pass the created waveform pointer to other functions for external use.
+*/
+lv_waveform_t *get_waveform_ptr() {
+    return waveform_ptr;
+}
+
+static void add_waveform_plot() {
+    if(_TESTING) ESP_LOGI(TAG, "In add_waveform_plot()");
+    if (!waveform_ptr) {
+        ESP_LOGE(TAG, "Waveform_ptr has not be initialized. Call create_ECG_screen() prior to add_waveform_plot().");
+        return;
+    }
+
+    if (!waveform_ptr->ch1) {
+        waveform_ptr->ch1 = lv_chart_add_series(waveform_ptr->chart, lv_palette_main(LV_PALETTE_YELLOW), LV_CHART_AXIS_PRIMARY_Y);
+    }
+    if (!waveform_ptr->ch2) {
+        waveform_ptr->ch2 = lv_chart_add_series(waveform_ptr->chart, lv_palette_main(LV_PALETTE_GREEN), LV_CHART_AXIS_PRIMARY_Y);
+    }
+    if (!waveform_ptr->ch3) {
+        waveform_ptr->ch3 = lv_chart_add_series(waveform_ptr->chart, lv_palette_main(LV_PALETTE_LIGHT_BLUE), LV_CHART_AXIS_PRIMARY_Y);
+    }
+}
+
+lv_obj_t *get_ecg_scr_label() {
+    return ecg_scr_label;
+}
+
+static void create_ECG_screen(uint8_t num_charts) {
+    if (_TESTING) ESP_LOGI(TAG, "In create_ECG_screen()");
+    static lv_waveform_t waveform = {};
+    waveform.chart = NULL;
+    waveform.ch1 = NULL;
+    waveform.ch2 = NULL;
+    waveform.ch3 = NULL;
+    waveform.y_scale = NULL;
+
+    ecg_scr = lv_obj_create(scr_container);
+    lv_obj_set_size(ecg_scr, lv_pct(100), lv_pct(100));
+    lv_obj_align(ecg_scr, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_remove_flag(ecg_scr, LV_OBJ_FLAG_SCROLLABLE);
+
+    ecg_scr_label = lv_label_create(ecg_scr);
+    lv_label_set_text(ecg_scr_label, "Calibrating ECG. One moment please...");
+    lv_obj_set_style_text_color(ecg_scr_label, lv_color_black(), 0);
+    lv_obj_align(ecg_scr_label, LV_ALIGN_CENTER, 0, 0);
+
+    // Initialize chart object
+    waveform.chart = lv_chart_create(ecg_scr);
+
+    // Set size to be 100% of both height and width of parent container
+    lv_obj_set_size(waveform.chart, lv_pct(100), lv_pct(100));
+    lv_obj_center(waveform.chart);
+    lv_chart_set_type(waveform.chart, LV_CHART_TYPE_LINE);
+    // Set the number of data points shown on the chart at once
+    // Effectively sets the data resolution of the chart
+    lv_chart_set_point_count(waveform.chart, 500);
+    
+    // Pack the constructed waveform into the global pointer
+    waveform_ptr = &waveform;
+
+    create_chart_scale(waveform_ptr);
+
+    if (num_charts > 0 && num_charts < 4) {
+        while (num_charts-- != 0) {
+            add_waveform_plot();
+        }
+    } else {
+        if (_TESTING) ESP_LOGE(TAG, "Parameter num_charts is out of bounds.");
+        return;
+    }
+
+    lv_obj_add_flag(ecg_scr, LV_OBJ_FLAG_HIDDEN);
+}
+
+void show_ECG_screen(void) {
+    if (_TESTING) ESP_LOGI(TAG, "In show_ECG_screen()");
+    if (!ecg_scr) {
+        create_ECG_screen(1);
+    }
+    // Show the ECG screen
+    lv_obj_set_flag(ecg_scr, LV_OBJ_FLAG_HIDDEN, false);
+    // Resume the ECG data streaming task
+    vTaskResume(ecg_stream_task_handle);
+    if (_TESTING) ESP_LOGI(TAG, "ecg_stream_task() resumed from show_ECG_screen().");
+}
+
+/*
+Container function for initializing all main GUI screens using LVGL.
+*/
+void create_LVGL_screens() {
+    // Make container for GUI subscreens
+    create_scr_container();
+    // Initialize LVGL objects for main screen and hide the screen
+    create_main_screen();
+    // Initialize LVGL objects for ECG screen with only one chart object and hide the screen
+    create_ECG_screen(1);
+    // Initialize LVGL objects for system menu sidebar
+    create_sidebar();
+}
+

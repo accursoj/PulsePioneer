@@ -1,6 +1,7 @@
 #include "esp_timer.h"
 #include "waveform.h"
 #include "ecg.h"
+#include "lcd.h"
 #include <stdlib.h>
 
 #define _TESTING 1
@@ -9,11 +10,16 @@ static const char *TAG = "waveform.c";
 
 bool broke_update_loop_flag = false;
 
-#define ECG_CALIBRATION_SAMPLES     5000
+#define ECG_CALIBRATION_SAMPLES     1000
 #define ECG_AXIS_PADDING_PERCENT    0.05f
 
 #define ECG_Y_TICK_COUNT 2   // Only min and max
 
+/*
+Create and assign an LVGL scale object to the passed waveform.
+Creates a scale with a number of ticks equal to the value set in ECG_Y_TICK_COUNT.
+If ECG_Y_TICK_COUNT=2, only max and min ticks will be added.
+*/
 void create_chart_scale(lv_waveform_t *waveform) {
     waveform->y_scale = lv_scale_create(lv_obj_get_parent(waveform->chart));
 
@@ -29,13 +35,10 @@ void create_chart_scale(lv_waveform_t *waveform) {
 
     // Vertical orientation (ticks on left side)
     lv_scale_set_mode(waveform->y_scale, LV_SCALE_MODE_VERTICAL_LEFT);
-
     // Only two ticks (min and max)
     lv_scale_set_total_tick_count(waveform->y_scale, ECG_Y_TICK_COUNT);
-
     // Every tick is major
     lv_scale_set_major_tick_every(waveform->y_scale, 1);
-
     // Show labels
     lv_scale_set_label_show(waveform->y_scale, true);
 }
@@ -63,21 +66,23 @@ static void update_ecg_fixed_axis(lv_waveform_t *waveform, int32_t val) {
 
     // Lock axis once enough samples have been collected
     if (ecg_sample_count >= ECG_CALIBRATION_SAMPLES) {
-        ESP_LOGI(TAG, "Calibrating ECG plot...");
+        lv_obj_add_flag(get_ecg_scr_label(), LV_OBJ_FLAG_HIDDEN);
 
         int32_t range = abs(ecg_max - ecg_min);
         if (range == 0) range = 1;
-
+        
         int32_t padding = (int32_t)(range * ECG_AXIS_PADDING_PERCENT);
-
+        
         int32_t axis_min = ecg_min - padding;
         int32_t axis_max = ecg_max + padding;
-
+        
         // Set axis range
         lv_chart_set_axis_range(chart,
-                                LV_CHART_AXIS_PRIMARY_Y,
-                                axis_min,
-                                axis_max);
+            LV_CHART_AXIS_PRIMARY_Y,
+            axis_min,
+            axis_max);
+            
+        ESP_LOGI(TAG, "ECG Plot Calibrated to %i through %i", axis_min, axis_max);
 
         // Set Y-axis ticks
         lv_scale_set_range(waveform->y_scale,
@@ -95,7 +100,7 @@ static void update_ecg_fixed_axis(lv_waveform_t *waveform, int32_t val) {
 
 }
 
-void new_update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t new_data_size) {
+void update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t new_data_size) {
 
     if (!waveform) {        // check for null
         ESP_LOGW(TAG, "Waveform pointer is null. Waveform plot was not updated.");
@@ -202,7 +207,7 @@ bool test_waveform_plot(lv_waveform_t *waveform) {
         }
         // if (_TESTING) ESP_LOGI(TAG, "Plotting value %ld at time %ld", sample_buffer.ch1, sample_buffer.timestamp_us);
 
-        waveform = update_waveform_plot(waveform, &(sample_buffer.ch1), 1);
+        update_waveform_plot(waveform, &(sample_buffer.ch1), 1);
     }
 
     // Clear chart data

@@ -3,6 +3,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "driver/gpio.h"
+#include <lvgl.h>
 
 // Enable LCD functionality
 #define INCLUDE_LCD 1
@@ -32,20 +33,28 @@ typedef enum {
 extern QueueHandle_t enc_queue;
 extern QueueHandle_t forwarded_enc_queue;
 
+void set_led_pwm(uint8_t p);
+
 void init_lcd(void);
 
 void lvgl_task(void *pvParameters);
 
 void input_task(void *pvParameters);
 
-TaskHandle_t get_gui_task_handle(void);
+// TaskHandle_t get_gui_task_handle(void);
 
-TaskHandle_t get_ecg_stream_task_handle(void);
+// TaskHandle_t get_ecg_stream_task_handle(void);
+
+void pass_gui_task_handle(TaskHandle_t *handle);
 
 void reset_display_timeout(void);
 
 void load_system_state(system_state_t state);
 
 void gui_task(void *pvParameters);
+
+lv_obj_t *get_ecg_scr_label(void);
+
+void boot_bar_completed_cb(void);
 
 #endif // LCD_H

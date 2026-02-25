@@ -9,7 +9,7 @@
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
 #include <string.h>
-#include <lvgl.h>
+
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -48,9 +48,9 @@ const gpio_num_t ENC_SW_PIN = 8;
 
 #define SPI_HW_MAX_BYTES (32 * 1024) // Safe Direct Memory Addressing (DMA) limit
 
-static lv_obj_t *boot_scr = NULL;
-static lv_obj_t *main_scr = NULL;
-static lv_obj_t *ecg_scr = NULL;
+// static lv_obj_t *boot_scr = NULL;
+// static lv_obj_t *main_scr = NULL;
+// static lv_obj_t *ecg_scr = NULL;
 
 static esp_lcd_panel_handle_t panel_handle = NULL;
 static esp_lcd_panel_io_handle_t io_handle = NULL;
@@ -72,7 +72,7 @@ char system_state;
 Sets the duty cycle value for the PWM signal used to control the brightness of the LCD backlight.
 E.g. 0 --> backlight off; 100 --> max brightness
 */
-static void set_led_pwm(uint8_t p) {
+void set_led_pwm(uint8_t p) {
     if (p > 100) {
         ESP_LOGE(TAG, "Duty cycle parameter exceeded 100%%");
         return;
@@ -83,24 +83,24 @@ static void set_led_pwm(uint8_t p) {
     ESP_ERROR_CHECK(ledc_update_duty(LED_PWM_SPEED_MODE, LED_PWM_CHANNEL));
 }
 
-static void lcd_reset() {
-    uint32_t current_ledc_duty = ledc_get_duty(LED_PWM_SPEED_MODE, LED_PWM_CHANNEL);
-    if (current_ledc_duty != LEDC_ERR_DUTY) {       // turn off backlight before reset
-        set_led_pwm(0);
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
+// static void lcd_reset() {
+//     uint32_t current_ledc_duty = ledc_get_duty(LED_PWM_SPEED_MODE, LED_PWM_CHANNEL);
+//     if (current_ledc_duty != LEDC_ERR_DUTY) {       // turn off backlight before reset
+//         set_led_pwm(0);
+//         vTaskDelay(pdMS_TO_TICKS(20));
+//     }
 
-    // Reset
-    gpio_set_level(LCD_RST_PIN, 0);     // reset with enable-low
-    vTaskDelay(pdMS_TO_TICKS(20));
-    gpio_set_level(LCD_RST_PIN, 1);     // disable
-    vTaskDelay(pdMS_TO_TICKS(20));
+//     // Reset
+//     gpio_set_level(LCD_RST_PIN, 0);     // reset with enable-low
+//     vTaskDelay(pdMS_TO_TICKS(20));
+//     gpio_set_level(LCD_RST_PIN, 1);     // disable
+//     vTaskDelay(pdMS_TO_TICKS(20));
 
-    if (current_ledc_duty != LEDC_ERR_DUTY) {       // turn backlight on after reset
-        set_led_pwm(100);
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-}
+//     if (current_ledc_duty != LEDC_ERR_DUTY) {       // turn backlight on after reset
+//         set_led_pwm(100);
+//         vTaskDelay(pdMS_TO_TICKS(20));
+//     }
+// }
 
 static bool IRAM_ATTR lcd_timeout_callback(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_data) {
     BaseType_t high_task_awoken = pdFALSE;
@@ -260,6 +260,7 @@ QueueHandle_t forwarded_enc_queue = NULL;
 rotary_encoder_t enc = {};
 static void init_encoder(void) {
     if (_TESTING) ESP_LOGI(TAG, "In init_encoder()");
+
     enc_queue = xQueueCreate(8, sizeof(rotary_encoder_event_t));
     forwarded_enc_queue = xQueueCreate(8, sizeof(rotary_encoder_event_t));
 
@@ -268,13 +269,10 @@ static void init_encoder(void) {
     enc.pin_a = ENC_CLK_PIN;
     enc.pin_b = ENC_DT_PIN;
     enc.pin_btn = ENC_SW_PIN;
-    // enc = {
-    //     .pin_a = ENC_CLK_PIN,
-    //     .pin_b = ENC_DT_PIN,
-    //     .pin_btn = (gpio_num_t)8//GPIO_NUM_MAX,        // eventually will be used with pin 8
-    // };
+
 
     ESP_ERROR_CHECK(rotary_encoder_add(&enc));
+    // ESP_ERROR_CHECK(rotary_encoder_enable_acceleration(&enc, 16));
 
     if (_TESTING) ESP_LOGI(TAG, "Rotary encoder was successfully initialized.");
 }
@@ -287,15 +285,8 @@ void reset_display_timeout() {
     set_led_pwm(100);
 }
 
-// void load_system_state(system_state_t state) {
-//     if (system_state != state) {
-//         system_state = state;
-//         reset_display_timeout();
-//         if (_TESTING) ESP_LOGI(TAG, "Switched system state to %d", state);
-//     }
-// }
-
 void load_system_state(system_state_t state) {
+    ESP_LOGI(TAG, "In system state. Old state: %d. New state: %d", system_state, state);
     if (system_state != state) {
         system_state = state;
 
@@ -312,181 +303,6 @@ void load_system_state(system_state_t state) {
     }
 }
 
-static lv_obj_t *boot_bar = NULL;
-static void create_boot_screen() {
-    if (_TESTING) ESP_LOGI(TAG, "In create_boot_screen()");   
-    
-    boot_scr = lv_obj_create(NULL);
-
-    lv_obj_set_style_bg_color(boot_scr, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(boot_scr, LV_OPA_COVER, 0);
-    lv_obj_align(boot_scr, LV_ALIGN_LEFT_MID, 0, 0);
-    
-    lv_obj_t *text = lv_label_create(boot_scr);
-    lv_label_set_text(text, "Booting PulsePioneer...");
-    lv_obj_set_style_text_color(text, lv_color_white(), 0);
-    lv_obj_align(text, LV_ALIGN_CENTER, 0, -40);
-    
-    boot_bar = lv_bar_create(boot_scr);
-    lv_obj_set_size(boot_bar, 240, 30);
-    lv_obj_align(boot_bar, LV_ALIGN_CENTER, 0, 40);
-}
-
-// ------------------------------
-// Main Screen
-// ------------------------------
-static void create_main_screen(void) {
-    if (_TESTING) ESP_LOGI(TAG, "In create_main_screen()");
-
-    main_scr = lv_obj_create(scr_container);
-
-    lv_obj_set_style_bg_color(main_scr, lv_color_hex(0xd4f8fc), 0);
-    lv_obj_set_style_bg_opa(main_scr, LV_OPA_COVER, 0);
-    lv_obj_set_size(main_scr, lv_pct(100), lv_pct(100));
-    lv_obj_align(main_scr, LV_ALIGN_CENTER, 0, 0);
-
-    lv_obj_t *text = lv_label_create(main_scr);
-    lv_label_set_text(text, "Welcome to PulsePioneer\n\n<Insert Setup Instructions Here>");
-    lv_obj_set_style_text_color(text, lv_color_black(), 0);
-    lv_obj_set_style_text_align(text, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(text, LV_ALIGN_CENTER, 0, 0);
-
-    lv_obj_add_flag(main_scr, LV_OBJ_FLAG_HIDDEN);
-
-}
-
-// ------------------------------
-// ECG Screen
-// ------------------------------
-static lv_waveform_t *waveform_ptr = NULL;
-static void add_waveform_plot() {
-    if(_TESTING) ESP_LOGI(TAG, "In add_waveform_plot()");
-    if (!waveform_ptr) {
-        ESP_LOGE(TAG, "Waveform_ptr has not be initialized. Call create_ECG_screen prior to add_waveform_plot().");
-        return;
-    }
-
-    // lv_waveform_t waveform = *waveform_ptr;
-    if (!waveform_ptr->ch1) {
-        waveform_ptr->ch1 = lv_chart_add_series(waveform_ptr->chart, lv_palette_main(LV_PALETTE_YELLOW), LV_CHART_AXIS_PRIMARY_Y);
-    }
-    if (!waveform_ptr->ch2) {
-        waveform_ptr->ch2 = lv_chart_add_series(waveform_ptr->chart, lv_palette_main(LV_PALETTE_GREEN), LV_CHART_AXIS_PRIMARY_Y);
-    }
-    if (!waveform_ptr->ch3) {
-        waveform_ptr->ch3 = lv_chart_add_series(waveform_ptr->chart, lv_palette_main(LV_PALETTE_LIGHT_BLUE), LV_CHART_AXIS_PRIMARY_Y);
-    }
-
-    // waveform_ptr = &waveform;
-}
-
-static void create_ECG_screen(uint8_t num_charts) {
-    if (_TESTING) ESP_LOGI(TAG, "In create_ECG_screen()");
-    static lv_waveform_t waveform = {};
-    waveform.chart = NULL;
-    waveform.ch1 = NULL;
-    waveform.ch2 = NULL;
-    waveform.ch3 = NULL;
-    waveform.y_scale = NULL;
-
-    ecg_scr = lv_obj_create(scr_container);
-    lv_obj_set_size(ecg_scr, lv_pct(100), lv_pct(100));
-    lv_obj_align(ecg_scr, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_remove_flag(ecg_scr, LV_OBJ_FLAG_SCROLLABLE);
-
-    // Initialize chart object
-    waveform.chart = lv_chart_create(ecg_scr);
-
-    lv_obj_set_size(waveform.chart, lv_pct(100), lv_pct(100));       // currently takes up a subwindow of the display
-    lv_obj_center(waveform.chart);
-    lv_chart_set_type(waveform.chart, LV_CHART_TYPE_LINE);
-
-    lv_chart_set_point_count(waveform.chart, 100);
-    
-    waveform_ptr = &waveform;
-
-    create_chart_scale(waveform_ptr);
-
-    if (num_charts > 0 && num_charts < 4) {
-        while (num_charts-- != 0) {
-            add_waveform_plot();
-        }
-    } else {
-        if (_TESTING) ESP_LOGE(TAG, "Parameter num_charts is out of bounds.");
-        return;
-    }
-
-    lv_obj_add_flag(ecg_scr, LV_OBJ_FLAG_HIDDEN);
-}
-
-// ------------------------------
-// Boot Screen
-// ------------------------------
-/*
-Callback function used to update the GUI system state to show the main screen once the boot bar animation is completed.
-*/
-static void boot_bar_completed_cb(void) {
-    create_scr_container();     // make container for GUI subscreens
-
-    create_main_screen();       // initialize LVGL objects and hide
-    create_ECG_screen(1);       // initialize LVGL items and hide
-    create_sidebar();
-    load_system_state(GUI_MAIN);
-}
-
-/*
-Increments the value of the boot bar and call boot_bar_completed_cb when done.
-*/
-static void start_boot_bar_animation() {
-    if (_TESTING) ESP_LOGI(TAG, "In show_boot_bar_animation()");
-
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, boot_bar);
-    lv_anim_set_values(&a, 0, 100);
-    lv_anim_set_time(&a, 1000);
-    lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_bar_set_value);
-    lv_anim_set_completed_cb(&a, (lv_anim_completed_cb_t)boot_bar_completed_cb);
-    lv_anim_start(&a);
-}
-
-/*
-Turns on LCD backlight, loads the boot screen object, and starts the boot bar animation.
-*/
-static void show_boot_screen() {
-    if (_TESTING) ESP_LOGI(TAG, "In show_boot_screen()");   
-    
-    create_boot_screen();
-    set_led_pwm(100);
-
-    lv_screen_load(boot_scr);
-
-    start_boot_bar_animation();
-}
-
-static void show_main_screen(void) {
-    if (_TESTING) ESP_LOGI(TAG, "In show_main_menu()");
-
-    // if (!main_scr) {
-    //     create_main_screen();
-    // }
-
-    lv_obj_set_flag(main_scr, LV_OBJ_FLAG_HIDDEN, false);
-}
-
-static void show_ECG_screen(void) {
-    if (_TESTING) ESP_LOGI(TAG, "In show_ECG_screen()");
-    // if (!ecg_scr) {
-    //     uint8_t num_ECG_channels = 1;
-    //     create_ECG_screen(num_ECG_channels);
-    // }
-
-    lv_obj_set_flag(ecg_scr, LV_OBJ_FLAG_HIDDEN, false);
-
-    ESP_LOGI(TAG, "First resume of ecg_stream_task...");
-    vTaskResume(ecg_stream_task_handle);
-}
-
 // ------------------------------
 // Test Screen
 // ------------------------------
@@ -495,39 +311,39 @@ A test function that should fill the display in the following order: red, green,
 The LVGL demo benchmark will then be run.
 The demo functionality must be enabled in lv_conf.h.
 */
-static void show_test_animation(lv_obj_t *scr) {
-    if (_TESTING) ESP_LOGI(TAG, "In show_test_animation()");
+// static void show_test_animation(lv_obj_t *scr) {
+//     if (_TESTING) ESP_LOGI(TAG, "In show_test_animation()");
 
-    set_led_pwm(100);
+//     set_led_pwm(100);
 
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0xFF0000), 0);      //red
-    lv_timer_handler();
+//     lv_obj_set_style_bg_color(scr, lv_color_hex(0xFF0000), 0);      //red
+//     lv_timer_handler();
 
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x00FF00), 0);      //green
-    lv_timer_handler();
+//     vTaskDelay(pdMS_TO_TICKS(1000));
+//     lv_obj_set_style_bg_color(scr, lv_color_hex(0x00FF00), 0);      //green
+//     lv_timer_handler();
 
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x0000FF), 0);      //blue
-    lv_timer_handler();
+//     vTaskDelay(pdMS_TO_TICKS(1000));
+//     lv_obj_set_style_bg_color(scr, lv_color_hex(0x0000FF), 0);      //blue
+//     lv_timer_handler();
 
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    lv_obj_set_style_bg_color(scr, lv_color_make(255, 0, 0), 0);      //red
-    lv_timer_handler();
+//     vTaskDelay(pdMS_TO_TICKS(1000));
+//     lv_obj_set_style_bg_color(scr, lv_color_make(255, 0, 0), 0);      //red
+//     lv_timer_handler();
 
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    lv_obj_set_style_bg_color(scr, lv_color_make(0, 255, 0), 0);      //green
-    lv_timer_handler();
+//     vTaskDelay(pdMS_TO_TICKS(1000));
+//     lv_obj_set_style_bg_color(scr, lv_color_make(0, 255, 0), 0);      //green
+//     lv_timer_handler();
 
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    lv_obj_set_style_bg_color(scr, lv_color_make(0, 0, 255), 0);      //blue
-    lv_timer_handler();    
+//     vTaskDelay(pdMS_TO_TICKS(1000));
+//     lv_obj_set_style_bg_color(scr, lv_color_make(0, 0, 255), 0);      //blue
+//     lv_timer_handler();    
 
-    vTaskDelay(pdMS_TO_TICKS(1000));
+//     vTaskDelay(pdMS_TO_TICKS(1000));
 
-    // Start benchmark
-    lv_demo_benchmark();
-}
+//     // Start benchmark
+//     lv_demo_benchmark();
+// }
 
 void init_lcd() {
     if (_TESTING) ESP_LOGI(TAG, "In init_lcd()");
@@ -545,8 +361,7 @@ static void plot_ecg_data(void) {
     ecg_sample_t sample_buffer;
     for (uint8_t i = 0; i < max_samples_per_loop; i++) {
         if (xQueueReceive(ecg_sample_queue, &sample_buffer, 0) != pdFALSE) {
-            // waveform_ptr = update_waveform_plot(waveform_ptr, &(sample_buffer.ch1), 1);
-            new_update_waveform_plot(waveform_ptr, &(sample_buffer.ch1), 1);
+            update_waveform_plot(get_waveform_ptr(), &(sample_buffer.ch1), 1);
             sent_task_resume = false;       // the task has resumed in order to get more data to this point
         } else {
             if (!sent_task_resume) {
@@ -594,14 +409,14 @@ void lvgl_task(void *pvParameters) {
                     show_ECG_screen();
                     break;
                 case LVGL_CMD_RUN_WAVEFORM_TEST:
-                    test_waveform_plot(waveform_ptr);
+                    test_waveform_plot(get_waveform_ptr());
                     break;
                 default:
                     break;
             }
         }
         
-        if (waveform_ptr && ecg_sample_queue) {
+        if (get_waveform_ptr() && ecg_sample_queue) {
             plot_ecg_data();
         }
         lv_timer_handler();
@@ -609,10 +424,51 @@ void lvgl_task(void *pvParameters) {
     }
 }
 
+static uint8_t enc_prev_state = 0;
+static bool enc_init = true;
+static void poll_gpio() {
+
+    static const int8_t transition_table[16] = {
+        0, -1, 1, 0,
+        1, 0, 0, -1,
+        -1, 0, 0, 1,
+        0, 1, -1, 0
+    };
+
+    // Create 2-bit value of current state of input A and B
+    uint8_t curr_state = gpio_get_level(ENC_CLK_PIN) |
+                            (gpio_get_level(ENC_DT_PIN) << 1);
+
+    if (enc_init) {
+        enc_prev_state = curr_state;
+        enc_init = false;
+        return;
+    }
+
+    uint8_t index = (enc_prev_state << 2) | curr_state;
+    enc_prev_state = curr_state;
+
+    // Set inc_val to 1 or -1 based on direction change
+    int8_t inc_val = transition_table[index];
+
+    if (inc_val) {
+        rotary_encoder_event_t enc_event = {};
+        enc_event.type = RE_ET_CHANGED;
+        enc_event.diff = inc_val;
+
+        // xQueueSend(enc_queue, &enc_event, 0);        // remove
+        // TODO: test passing the proprietary position detection to the forwarded_enc_queue
+        //      such that only button presses from encoder.c are passed to enc_queue DONE
+        xQueueSend(forwarded_enc_queue, &enc_event, 0);
+
+        if (_TESTING) ESP_LOGI(TAG, "New position diff: %" PRIi8, inc_val);
+    }
+}
+
 void input_task(void *pvParameters) {
     if (_TESTING) ESP_LOGI(TAG, "Started input_task()");
 
-    const TickType_t delay = pdMS_TO_TICKS(100);
+    const TickType_t delay = pdMS_TO_TICKS(20);
     rotary_encoder_event_t enc_event;
     int32_t enc_val = 0;
 
@@ -621,42 +477,58 @@ void input_task(void *pvParameters) {
 
     // Check rotary encoder state
     for ( ;; ) {
-        // Check event queue for new events to be processed
-        // Delay indefinitely if queue is empty
-        xQueueReceive(enc_queue, &enc_event, portMAX_DELAY);
-        // forward event for gui processing
-        xQueueSend(forwarded_enc_queue, &enc_event, 0);
+        // Check GPIO states
+        poll_gpio();
 
-        // Print the type of event that occurred
-        switch (enc_event.type) {
-            case RE_ET_BTN_PRESSED:
-                if (_TESTING) ESP_LOGI(TAG, "Button pressed");
-                break;
-            case RE_ET_BTN_RELEASED:
-                if (_TESTING) ESP_LOGI(TAG, "Button released");
-                break;
-            case RE_ET_BTN_CLICKED:
-                if (_TESTING) ESP_LOGI(TAG, "Button clicked");
-                break;
-            case RE_ET_BTN_LONG_PRESSED:
-                if (_TESTING) ESP_LOGI(TAG, "Button long-pressed");
-                break;
-            case RE_ET_CHANGED:
-                enc_val += enc_event.diff;
-                if (_TESTING) ESP_LOGI(TAG, "Value = %" PRIi32, enc_val);
-                break;
-            default:
-                break;
+        // Check event queue for new events to be processed
+        if (xQueueReceive(enc_queue, &enc_event, 0)) {
+            // forward event for gui processing
+            // TODO: test this state check. DONE
+            //      purpose is to send proprietary position detections to forwarded_enc_queue
+            //      instead of enc_queue. Therefore, ignore the position detection from encoder.c.
+            //      Currently still need encoder.c for button presses.
+            if (enc_event.type != RE_ET_CHANGED) {
+                xQueueSend(forwarded_enc_queue, &enc_event, 0);
+            }
+    
+            // Print the type of event that occurred
+            switch (enc_event.type) {
+                case RE_ET_BTN_PRESSED:
+                    if (_TESTING) ESP_LOGI(TAG, "Button pressed");
+                    break;
+                case RE_ET_BTN_RELEASED:
+                    if (_TESTING) ESP_LOGI(TAG, "Button released");
+                    break;
+                case RE_ET_BTN_CLICKED:
+                    if (_TESTING) ESP_LOGI(TAG, "Button clicked");
+                    break;
+                case RE_ET_BTN_LONG_PRESSED:
+                    if (_TESTING) ESP_LOGI(TAG, "Button long-pressed");
+                    break;
+                case RE_ET_CHANGED:
+                    enc_val += enc_event.diff;
+                    if (_TESTING) ESP_LOGI(TAG, "Value = %" PRIi32, enc_val);
+                    break;
+                default:
+                    break;
+            }
         }
 
         vTaskDelay(delay);
     }
 }
 
+void pass_gui_task_handle(TaskHandle_t *handle) {
+    gui_task_handle = *handle;
+}
+
+// -------------------
+// GUI Task
+// -------------------
 void gui_task(void *pvParameters) {
     if (_TESTING) ESP_LOGI(TAG, "Started gui_task()");
 
-    gui_task_handle = get_gui_task_handle();
+    // gui_task_handle = get_gui_task_handle();
 
     system_state = GUI_BOOT;
 
@@ -670,7 +542,7 @@ void gui_task(void *pvParameters) {
 
     for (;;) {
         // Sleep until notified that the state has changed
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);        // Binary sempahore with maximum wait time
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);        // Binary sempahore with maximum wait
 
         switch (system_state) {
             case GUI_MAIN:
