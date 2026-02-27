@@ -279,6 +279,13 @@ static void create_boot_screen() {
     lv_obj_align(boot_bar, LV_ALIGN_CENTER, 0, 40);
 }
 
+static void boot_bar_completed_cb() {
+    // Replace boot screen with main root screen container
+    lv_screen_load(root_scr);
+    // Switch to main menu GUI state
+    load_system_state(GUI_MAIN);
+}
+
 /*
 Increments the value of the boot bar and calls boot_bar_completed_cb when done.
 */
@@ -319,7 +326,11 @@ static void create_main_screen(void) {
     if (_TESTING) ESP_LOGI(TAG, "In create_main_screen()");
 
     main_scr = lv_obj_create(scr_container);
-
+    
+    if (!main_scr) {
+        if (_TESTING) ESP_LOGI(TAG, "main_scr is still null");
+    }
+    
     lv_obj_set_style_bg_color(main_scr, lv_color_hex(0xd4f8fc), 0);
     lv_obj_set_style_bg_opa(main_scr, LV_OPA_COVER, 0);
     lv_obj_set_size(main_scr, lv_pct(100), lv_pct(100));
@@ -332,6 +343,8 @@ static void create_main_screen(void) {
     lv_obj_align(text, LV_ALIGN_CENTER, 0, 0);
 
     lv_obj_add_flag(main_scr, LV_OBJ_FLAG_HIDDEN);
+
+    if(_TESTING) ESP_LOGI(TAG, "Returning from create_main_screen()");
 }
 
 void show_main_screen(void) {
@@ -344,6 +357,8 @@ void show_main_screen(void) {
 
     // Show the screen
     lv_obj_set_flag(main_scr, LV_OBJ_FLAG_HIDDEN, false);
+
+    if(_TESTING) ESP_LOGI(TAG, "Returning from show_main_scr()");
 }
 
 
@@ -442,6 +457,7 @@ void show_ECG_screen(void) {
 Container function for initializing all main GUI screens using LVGL.
 */
 void create_LVGL_screens() {
+    if (_TESTING) ESP_LOGI(TAG, "In create_LVGL_screens()");
     // Make container for GUI subscreens
     create_scr_container();
     // Initialize LVGL objects for main screen and hide the screen

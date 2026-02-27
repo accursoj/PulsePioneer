@@ -100,6 +100,11 @@ static void update_ecg_fixed_axis(lv_waveform_t *waveform, int32_t val) {
 
 }
 
+/*
+Checks that the passed waveform pointer has been initialized.
+Use create_waveform_plot() prior to calling this function.
+Must be called from within the LVGL task.
+*/
 void update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t new_data_size) {
 
     if (!waveform) {        // check for null
@@ -121,48 +126,48 @@ void update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t n
 }
 
 
-/*
-Checks that the passed waveform pointer has been initialized. Use create_waveform_plot() prior to calling this function.
-Updates the LVGL timer handler. Must be called from within the LVGL task.
-*/
-static int32_t init_y_max = 6080000;
-static int32_t init_y_min = 6010000;
-static int32_t y_range_max = 6080000;
-static int32_t y_range_min = 6010000;
-static int32_t counter = 0;
+// /*
+// Checks that the passed waveform pointer has been initialized. Use create_waveform_plot() prior to calling this function.
+// Updates the LVGL timer handler. Must be called from within the LVGL task.
+// */
+// static int32_t init_y_max = 6080000;
+// static int32_t init_y_min = 6010000;
+// static int32_t y_range_max = 6080000;
+// static int32_t y_range_min = 6010000;
+// static int32_t counter = 0;
 
-lv_waveform_t *update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t new_data_size) {
-    if (!waveform) {        // check for null
-        ESP_LOGW(TAG, "Waveform pointer is null. Waveform plot was not updated.");
-        return waveform;
-    }
-    lv_obj_t *chart = waveform->chart;
+// lv_waveform_t *update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t new_data_size) {
+//     if (!waveform) {        // check for null
+//         ESP_LOGW(TAG, "Waveform pointer is null. Waveform plot was not updated.");
+//         return waveform;
+//     }
+//     lv_obj_t *chart = waveform->chart;
     
-    uint16_t i;
-    for (i = 0; i < new_data_size; i++) {
-        lv_chart_set_next_value(chart, waveform->ch1, *(new_data + i));
+//     uint16_t i;
+//     for (i = 0; i < new_data_size; i++) {
+//         lv_chart_set_next_value(chart, waveform->ch1, *(new_data + i));
 
-        if (counter > 100) {
-            // counter = 0;
-            lv_chart_set_axis_range(chart, LV_CHART_AXIS_PRIMARY_Y, init_y_min, init_y_max);
-        }
+//         if (counter > 100) {
+//             // counter = 0;
+//             lv_chart_set_axis_range(chart, LV_CHART_AXIS_PRIMARY_Y, init_y_min, init_y_max);
+//         }
 
-        if (*new_data > y_range_max) {
-            y_range_max = *new_data;
-            lv_chart_set_axis_range(chart, LV_CHART_AXIS_PRIMARY_Y, y_range_min, y_range_max);
-        } else if (*new_data < y_range_min) {
-            y_range_min = *new_data;
-            lv_chart_set_axis_range(chart, LV_CHART_AXIS_PRIMARY_Y, y_range_min, y_range_max);
-        }
+//         if (*new_data > y_range_max) {
+//             y_range_max = *new_data;
+//             lv_chart_set_axis_range(chart, LV_CHART_AXIS_PRIMARY_Y, y_range_min, y_range_max);
+//         } else if (*new_data < y_range_min) {
+//             y_range_min = *new_data;
+//             lv_chart_set_axis_range(chart, LV_CHART_AXIS_PRIMARY_Y, y_range_min, y_range_max);
+//         }
 
-        lv_timer_handler();
-        counter++;
-    }
+//         lv_timer_handler();
+//         counter++;
+//     }
 
-    waveform->chart = chart;        // update waveform struct
+//     waveform->chart = chart;        // update waveform struct
     
-    return waveform;
-}
+//     return waveform;
+// }
 
 QueueHandle_t waveform_test_queue = NULL;
 /*

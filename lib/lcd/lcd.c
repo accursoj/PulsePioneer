@@ -102,6 +102,7 @@ void set_led_pwm(uint8_t p) {
 //     }
 // }
 
+static bool display_dimmed = false;
 static bool IRAM_ATTR lcd_timeout_callback(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_data) {
     BaseType_t high_task_awoken = pdFALSE;
     vTaskNotifyGiveFromISR(lcd_timeout_handle, &high_task_awoken);
@@ -111,13 +112,16 @@ static bool IRAM_ATTR lcd_timeout_callback(gptimer_handle_t timer, const gptimer
 
 static void lcd_timeout_task() {
     if (_TESTING) ESP_LOGI(TAG, "Started lcd_timeout_task()");
-    while (1)
-    {
+    for (;;) {   
+        // Block until lcd_timeout_callback() is triggered
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
         // Timer has expired
-        set_led_pwm(10);
-        ESP_LOGI(TAG, "LCD auto-timeout triggered. LCD Brightness has been reduced.");
+        if (!display_dimmed) {
+            set_led_pwm(10);
+            display_dimmed = true;
+            ESP_LOGI(TAG, "LCD auto-timeout triggered. LCD Brightness has been reduced.");
+        }
     }
     if (_TESTING) ESP_LOGW(TAG, "Ended lcd_timeout_task()");        // this should theoretically never be called
 }
@@ -133,12 +137,15 @@ static void init_timeout() {
 
     gptimer_alarm_config_t timer_alarm_config = {};
     if (_TESTING) {
-        timer_alarm_config.alarm_count = 600000000;       // 60,000,000 ticks (1 minute) -> 10 minutes
+        timer_alarm_config.alarm_count = 6000000;       // 60,000,000 ticks (1 minute) -> 10 minutes
     }
     else {
         timer_alarm_config.alarm_count = 600000000;       // 600,000,000 ticks (10 minutes)
     }
-    timer_alarm_config.flags.auto_reload_on_alarm = 0;      // will be manually reset when user input is detected
+    // Reload the timer after it expires
+    // This will not continuously trigger the LCD-timeout because it will set the display_dimmed flag
+    // reset_display_timeout() will unset the display_dimmed flag when user input is detected
+    timer_alarm_config.flags.auto_reload_on_alarm = 1;
 
     ESP_ERROR_CHECK(gptimer_set_alarm_action(timer_handle, &timer_alarm_config));
 
@@ -282,25 +289,60 @@ static void init_encoder(void) {
 void reset_display_timeout() {
     // Reset timer for lcd auto-timeout
     ESP_ERROR_CHECK(gptimer_set_raw_count(timer_handle, 0));
-    set_led_pwm(100);
+    if (display_dimmed) {
+        set_led_pwm(100);
+        display_dimmed = false;
+    }
 }
 
-void load_system_state(system_state_t state) {
-    ESP_LOGI(TAG, "In system state. Old state: %d. New state: %d", system_state, state);
-    if (system_state != state) {
-        system_state = state;
+void load_system_state(system_state_t new_state) {
+    ESP_LOGI(TAG, "In system state. Old state: %d. New state: %d", system_state, new_state);
 
-        lv_obj_set_flag(main_scr, LV_OBJ_FLAG_HIDDEN, true);
-        lv_obj_set_flag(ecg_scr, LV_OBJ_FLAG_HIDDEN, true);
+    if (!gui_task_handle) {
+        if (_TESTING) ESP_LOGW(TAG, "load_system_state() was called, but gui_task_handle is still undefined. Returning...");
+        return;
+    }
 
-        if (gui_task_handle) {
-            if (_TESTING) ESP_LOGI(TAG, "Switched system state to %d", state);
-            xTaskNotifyGive(gui_task_handle);   // notify the GUI task
+    if (system_state != GUI_BOOT && system_state != new_state) {
+        system_state = new_state;
+
+        if (main_scr && ecg_scr) {
+            lv_obj_set_flag(main_scr, LV_OBJ_FLAG_HIDDEN, true);
+            lv_obj_set_flag(ecg_scr, LV_OBJ_FLAG_HIDDEN, true);
         } else {
-            if (_TESTING) ESP_LOGW(TAG, "State change received, but gui_task_handle is still undefined.");
+            if (_TESTING) ESP_LOGW(TAG, "main_scr or ecg_scr still NULL prior to load_system_state()");
         }
 
+        // if (gui_task_handle) {
+            if (_TESTING) ESP_LOGI(TAG, "Switched system state to %d", new_state);
+            xTaskNotifyGive(gui_task_handle);   // notify the GUI task
+        // } else {
+            // if (_TESTING) ESP_LOGW(TAG, "State change received, but gui_task_handle is still undefined.");
+        // }
+    } else if (system_state == GUI_BOOT) {
+        if (_TESTING) ESP_LOGI(TAG, "Processing initial state change.");
+        system_state = new_state;
+        xTaskNotifyGive(gui_task_handle);
     }
+
+    // if (system_state != new_state) {
+    //     system_state = new_state;
+
+    //     if (main_scr && ecg_scr) {
+    //         lv_obj_set_flag(main_scr, LV_OBJ_FLAG_HIDDEN, true);
+    //         lv_obj_set_flag(ecg_scr, LV_OBJ_FLAG_HIDDEN, true);
+    //     } else {
+    //         if (_TESTING) ESP_LOGW(TAG, "main_scr or ecg_scr still NULL prior to load_system_state()");
+    //     }
+
+    //     if (gui_task_handle) {
+    //         if (_TESTING) ESP_LOGI(TAG, "Switched system state to %d", new_state);
+    //         xTaskNotifyGive(gui_task_handle);   // notify the GUI task
+    //     } else {
+    //         if (_TESTING) ESP_LOGW(TAG, "State change received, but gui_task_handle is still undefined.");
+    //     }
+
+    // }
 }
 
 // ------------------------------
@@ -346,26 +388,30 @@ The demo functionality must be enabled in lv_conf.h.
 // }
 
 void init_lcd() {
-    if (_TESTING) ESP_LOGI(TAG, "In init_lcd()");
+    if (_TESTING) ESP_LOGI(TAG, "In init_lcd().");
 
     init_led_pwm();
     set_led_pwm(0);
 
     init_st7796();
     init_lvgl();
+
+    if (_TESTING) ESP_LOGI(TAG, "init_lcd() was successfully completed.");
 }
 
 static bool sent_task_resume = false;
 const uint8_t max_samples_per_loop = 5;
 static void plot_ecg_data(void) {
     ecg_sample_t sample_buffer;
+    // Process a batch of samples that has size of max_samples_per_loop
     for (uint8_t i = 0; i < max_samples_per_loop; i++) {
+        // Check if there is data to receive from the data queue
         if (xQueueReceive(ecg_sample_queue, &sample_buffer, 0) != pdFALSE) {
             update_waveform_plot(get_waveform_ptr(), &(sample_buffer.ch1), 1);
-            sent_task_resume = false;       // the task has resumed in order to get more data to this point
+            if (sent_task_resume) sent_task_resume = false;       // the task was resumed in order to get more data and thus reach this point in the code
         } else {
+            // Resume streaming task to fill the empty queue with more data
             if (!sent_task_resume) {
-                // ESP_LOGI(TAG, "Resuming ecg_stream_task...");
                 vTaskResume(ecg_stream_task_handle);
                 sent_task_resume = true;
             }
@@ -386,6 +432,8 @@ typedef enum {
 } lvgl_cmd_t;
 void lvgl_task(void *pvParameters) {
     if (_TESTING) ESP_LOGI(TAG, "Started lvgl_task()");
+
+    create_LVGL_screens();
 
     ecg_stream_task_handle = get_ecg_stream_task_handle();
 
@@ -543,7 +591,7 @@ void gui_task(void *pvParameters) {
     for (;;) {
         // Sleep until notified that the state has changed
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);        // Binary sempahore with maximum wait
-
+        if (_TESTING) ESP_LOGI(TAG, "gui_task() was notified of new state change.");
         switch (system_state) {
             case GUI_MAIN:
                 cmd = LVGL_CMD_SHOW_MAIN;

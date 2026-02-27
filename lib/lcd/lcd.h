@@ -41,10 +41,6 @@ void lvgl_task(void *pvParameters);
 
 void input_task(void *pvParameters);
 
-// TaskHandle_t get_gui_task_handle(void);
-
-// TaskHandle_t get_ecg_stream_task_handle(void);
-
 void pass_gui_task_handle(TaskHandle_t *handle);
 
 void reset_display_timeout(void);
@@ -55,6 +51,6 @@ void gui_task(void *pvParameters);
 
 lv_obj_t *get_ecg_scr_label(void);
 
-void boot_bar_completed_cb(void);
+// void boot_bar_completed_cb(void);
 
 #endif // LCD_H

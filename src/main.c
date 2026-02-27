@@ -156,7 +156,7 @@ void app_main()
     if (INCLUDE_LCD) {
         xTaskCreatePinnedToCore(lvgl_task, "lvgl_task", 8192, NULL, 3, &lvgl_task_handle, 1);
         xTaskCreatePinnedToCore(input_task, "input_task", 4096, NULL, 10, &input_task_handle, 1);
-        xTaskCreatePinnedToCore(gui_task, "gui_task", 2048, NULL, 5, &gui_task_handle, 1);
+        xTaskCreatePinnedToCore(gui_task, "gui_task", 4096, NULL, 5, &gui_task_handle, 1);
         
         pass_gui_task_handle(&gui_task_handle);
     }   
