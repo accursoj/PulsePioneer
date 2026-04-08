@@ -1,3 +1,9 @@
+#pragma once
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 #ifndef ECG_H
 #define ECG_H
 
@@ -52,4 +58,11 @@ void ecg_power_down(void);
 
 void ecg_stream_task(void *pvParameters);
 
+QueueHandle_t get_ecg_data_model_input_queue(void);
+
 #endif // ECG_H
+
+
+#ifdef __cplusplus
+}
+#endif

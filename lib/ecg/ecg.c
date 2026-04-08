@@ -5,6 +5,8 @@
 #include "esp_err.h"
 #include "lvgl.h"
 
+#include "gui.h"
+
 #include "esp_log.h"
 static const char *TAG = "ecg.c";
 
@@ -14,6 +16,8 @@ spi_device_handle_t ecg_handle;
 
 // Queue for all ECG samples to be processed
 QueueHandle_t ecg_sample_queue = NULL;
+// Queue to forward ECG data to model task
+QueueHandle_t ecg_data_model_input_queue = NULL;
 
 const gpio_num_t ECG_SCLK_PIN = 9;
 const gpio_num_t ECG_SDI_PIN = 10;
@@ -65,12 +69,12 @@ void read_register(uint8_t reg_address, uint8_t reg_i) {
     }
 
     uint16_t i;
-    printf("\n");
+    // printf("\n");
     for (i = 0; i < sizeof(rx_buffer_data); i++) {
         if (i != reg_i) {
             continue;
         }
-        printf("%#08x was read from register %#08x[%d].\n", rx_buffer_data[i], reg_address, i);
+        // printf("%#08x was read from register %#08x[%d].\n", rx_buffer_data[i], reg_address, i);
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
@@ -151,16 +155,10 @@ void ecg_read_sample(uint8_t *status, int32_t *ch1, int32_t *ch2) {
 
     uint8_t rx_buffer_data[NUM_BYTES_ECG_SAMPLE];
     uint8_t tx_buffer_data[NUM_BYTES_ECG_SAMPLE] = {0xD0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-    // uint8_t rx_buffer_data[2] = {0};
-    // uint8_t tx_buffer_data[2] = {0x20 | 0x00, 0x00};
 
     spi_transaction_t transaction = {};
     transaction.flags = 0;  //SPI_TRANS_CS_KEEP_ACTIVE;
     transaction.length = NUM_BYTES_ECG_SAMPLE * 8;
-    // transaction.tx_data[0] = 0xD0; // start read
-    // transaction.tx_data[1] = 0x00;
-    // transaction.tx_data[2] = 0x00;
-    // transaction.tx_data[3] = 0x00;
     transaction.tx_buffer = tx_buffer_data;
     transaction.rx_buffer = rx_buffer_data;
 
@@ -171,8 +169,6 @@ void ecg_read_sample(uint8_t *status, int32_t *ch1, int32_t *ch2) {
 
     ESP_ERROR_CHECK(spi_device_transmit(ecg_handle, &transaction));
 
-    // printf("ID reg: 0x%02X\n", rx_buffer_data[1]);
-
     *status = rx_buffer_data[1];
 
     int32_t ch1_raw = (rx_buffer_data[2] << 16) | (rx_buffer_data[3] << 8) | rx_buffer_data[4];
@@ -181,11 +177,22 @@ void ecg_read_sample(uint8_t *status, int32_t *ch1, int32_t *ch2) {
     if (ch1_raw & 0x800000) ch1_raw |= 0xFF000000;
     if (ch2_raw & 0x800000) ch2_raw |= 0xFF000000;
 
-    // *ch1 = (int16_t)(ch1_raw >> 8);
-    // *ch2 = (int16_t)(ch2_raw >> 8);
     *ch1 = ch1_raw;
     *ch2 = ch2_raw;
 }
+
+typedef enum {
+    CMOR = 0,
+    RLDRAIL = 1,
+    BATLOW = 2,
+    LEADOFF = 3,
+    CH1ERR = 4,
+    CH2ERR = 5,
+    CH3ERR = 6,
+    SYNCEDGEERR = 7
+} alarm_error_t;
+const char* alarm_types[] = {"CMOR", "RLDRAIL", "BATLOW", "LEADOFF", "CH1ERR", "CH2ERR", "CH3ERR", "SYNCEDGEERR"};
+
 
 void print_alarm_errors() {
     uint8_t rx_buffer_data[NUM_BYTES_ECG_SAMPLE] = {0};
@@ -209,6 +216,13 @@ void print_alarm_errors() {
     if (alarm & (0x1 << 5)) ESP_LOGW(TAG, "CH2ERR");
     if (alarm & (0x1 << 6)) ESP_LOGW(TAG, "CH3ERR");
     if (alarm & (0x1 << 7)) ESP_LOGW(TAG, "SYNCEDGEERR");
+
+    // for (int i = 0; i < (sizeof(alarm) * 8); i++) {
+    //     if (alarm & (0x1 << i)) {
+    //         ESP_LOGW(TAG, alarm_types[i]);
+    //     }
+    // }
+
     vTaskDelay(pdMS_TO_TICKS(1));
 }
 
@@ -257,42 +271,33 @@ void stream_ecg_data() {
         if (_TESTING && gpio_get_level(ECG_ALAB_PIN) == 0) {
             print_alarm_errors();
             show_rgb_led(255, 0, 0, 25);
+            update_sys_state_text("Alarm");
             error_flag = true;
             return;
         } else {
             if (error_flag) {
                 error_flag = false;
                 show_rgb_led(0, 255, 0, 25);
+                update_sys_state_text("Ready");
             }
         }
         // Check for valid data
         if (sample.data_status != 0) {
-            if (_TESTING) {
-                if (++decim >= 64) {        //5
-                    // printf("%ld %ld\n", sample.timestamp_us, sample.ch1);
-                    decim = 0;
-                    if (uxQueueSpacesAvailable(ecg_sample_queue)) {     // check for queue space
-                        xQueueSend(ecg_sample_queue, &sample, 0);
-                        if (full_queue_flag) full_queue_flag = false;
-                    } else {
-                        if (_TESTING) ESP_LOGI(TAG, "ECG Data Sample Queue is Full at timestamp:%ld", sample.timestamp_us);
-                        full_queue_flag = true;
-                        // stop streaming if queue is full
-                        return;
-                    }
+            if (++decim >= 64) {
+                // printf("%ld %ld\n", sample.timestamp_us, sample.ch1);
+                decim = 0;
+                if (uxQueueSpacesAvailable(ecg_sample_queue)) {     // check for queue space
+                    xQueueSend(ecg_sample_queue, &sample, 0);
+                    xQueueSend(ecg_data_model_input_queue, &sample, 0);
+                    if (full_queue_flag) full_queue_flag = false;
+                } else {
+                    if (_TESTING) ESP_LOGI(TAG, "ECG Data Sample Queue is Full at timestamp:%ld", sample.timestamp_us);
+                    full_queue_flag = true;
+                    // stop streaming if queue is full
+                    return;
                 }
             }
         }
-        // if (uxQueueSpacesAvailable(ecg_sample_queue)) {     // check for queue space
-        //     xQueueSend(ecg_sample_queue, &sample, 0);
-        //     if (full_queue_flag) full_queue_flag = false;
-        // } else {
-        //     // if (_TESTING) ESP_LOGI(TAG, "ECG Data Sample Queue is Full at timestamp:%ld", sample.timestamp_us);
-        //     // full_queue_flag = true;
-        //     // stop streaming if queue is full
-        //     return;
-        // }
-
     }
     vTaskDelay(0);
 }
@@ -308,6 +313,11 @@ void ecg_stream_task(void *pvParameters) {
     if (!ecg_sample_queue) {
         ESP_LOGE(TAG, "ECG sample queue could not be created.");
         vTaskDelete(NULL);
+    }
+    // Create data queue for forwarding data to model inference task
+    ecg_data_model_input_queue = xQueueCreate(1024, sizeof(ecg_sample_t));  // estimated to hold 8.5s worth of data
+    if (ecg_data_model_input_queue == NULL) {
+        ESP_LOGE(TAG, "ecg_data_model_queue could not be created.");
     }
     
     write_ecg_data(0x2F, 0x31); // enable CH2, CH1, and DATA_STATUS for loop read-back mode
@@ -325,7 +335,7 @@ void ecg_stream_task(void *pvParameters) {
             full_queue_flag = false;
         } 
         if (error_flag) {
-            vTaskDelay(pdMS_TO_TICKS(1000));        // wiat before re-checking status
+            vTaskDelay(pdMS_TO_TICKS(1000));        // wait before re-checking status
             write_ecg_data(0x00, 0x00); // stop lingering conversions
             write_ecg_data(0x2F, 0x31); // enable CH2, CH1, and DATA_STATUS for loop read-back mode
             write_ecg_data(0x00, 0x01); // start conversion
@@ -336,6 +346,13 @@ void ecg_stream_task(void *pvParameters) {
     }
 
     if (_TESTING) ESP_LOGW(TAG, "Ended ecg_stream_task()");     // this should theoretically never be called
+}
+
+QueueHandle_t get_ecg_data_model_input_queue() {
+    if (ecg_data_model_input_queue == NULL) {
+        ESP_LOGW(TAG, "ecg_model_input_queue was requested, but it has a value of NULL.");
+    }
+    return ecg_data_model_input_queue;
 }
 
 void ecg_power_down() {

@@ -5,8 +5,12 @@ Functions related to creating and controlling the LVGL graphical user interface.
 #include "gui.h"
 
 #define SIDEBAR_W 80
+#define STATUS_BAR_H 20
 
 #define _TESTING 1
+
+lv_obj_t *status_bar = NULL;
+lv_obj_t *status_bar_label = NULL;
 
 lv_obj_t *scr_container = NULL;
 lv_obj_t *ecg_scr_label;
@@ -28,6 +32,8 @@ static lv_obj_t *boot_scr = NULL;
 lv_obj_t *main_scr = NULL;
 lv_obj_t *ecg_scr = NULL;
 
+static bool sidebar_shown = true;
+
 const char *TAG = "gui.c";
 
 void pass_ecg_stream_task_handle(TaskHandle_t *handle) {
@@ -39,21 +45,60 @@ TaskHandle_t get_ecg_stream_task_handle() {
 }
 
 void create_root_screen(void) {
+    if (_TESTING) ESP_LOGI(TAG, "In create_root_screen()");
     root_scr = lv_obj_create(NULL);
 
     lv_obj_remove_flag(root_scr, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_set_style_bg_color(root_scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(root_scr, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(root_scr, 0, 0);
 
-    lv_screen_load(root_scr);
+    // lv_screen_load(root_scr);
+
+    if (_TESTING) ESP_LOGI(TAG, "Returning from create_root_screen()");
 }
 
+/*
+Returns the root screen which houses the screen container and sidebar container.
+*/
 lv_obj_t *get_root_screen(void) {
     if (!root_scr) {
         create_root_screen();
     }
     return root_scr;
+}
+
+void update_sys_state_text(const char *new_state_text) {
+    if (status_bar_label) {
+        lv_label_set_text_fmt(status_bar_label, "Status: %s", new_state_text);
+    } else {
+        if (_TESTING) ESP_LOGW(TAG, "update_sys_state_text(%s) was called but status_bar_label is not defined.", new_state_text);
+    }
+}
+
+static void create_status_bar() {
+    if (_TESTING) ESP_LOGI(TAG, "In create_status_bar()");
+    if (!root_scr) {
+        create_root_screen();
+    }
+
+    status_bar = lv_obj_create(root_scr);
+    lv_obj_set_size(status_bar, LV_HOR_RES, STATUS_BAR_H);
+    lv_obj_align(status_bar, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_style_pad_all(status_bar, 0, 0);
+    lv_obj_set_style_border_width(status_bar, 0, 0);
+    lv_obj_set_style_bg_opa(status_bar, LV_OPA_COVER, 0);
+
+    lv_obj_set_style_bg_color(status_bar, lv_color_make(50, 50, 50), 0);
+    lv_obj_set_style_radius(status_bar, 0, 0);
+
+    status_bar_label = lv_label_create(status_bar);
+    lv_obj_align(status_bar_label, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_text_color(status_bar_label, lv_color_white(), 0);
+    lv_label_set_text_fmt(status_bar_label, "Status: none");
+
+    if (_TESTING) ESP_LOGI(TAG, "Returning from create_status_bar()");
 }
 
 static void create_scr_container(void) {
@@ -62,11 +107,12 @@ static void create_scr_container(void) {
             create_root_screen();
         }
         scr_container = lv_obj_create(root_scr);
-        lv_obj_align(scr_container, LV_ALIGN_LEFT_MID, 0, 0);
-        lv_obj_set_size(scr_container, LV_HOR_RES - SIDEBAR_W, LV_VER_RES);
+        lv_obj_align(scr_container, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_set_size(scr_container, LV_HOR_RES - SIDEBAR_W, LV_VER_RES - STATUS_BAR_H);
         lv_obj_set_style_pad_all(scr_container, 0, 0);
         lv_obj_set_style_border_width(scr_container, 0, 0);
         lv_obj_set_style_bg_opa(scr_container, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_radius(scr_container, 0, 0);
 
         lv_obj_remove_flag(scr_container, LV_OBJ_FLAG_SCROLLABLE);
     }
@@ -77,10 +123,6 @@ Callback function for an encoder-based LVGL input device.
 Called from init_sidebar_input().
 */
 static void enc_read(lv_indev_t *indev, lv_indev_data_t *data) {
-    // if (!indev_queue) {
-    //     indev_queue = xQueueCreate(8, sizeof(rotary_encoder_event_t));
-    // }
-    // if (xQueueReceive(indev_queue, &enc_event, 0) != pdFALSE) {
     if (xQueueReceive(forwarded_enc_queue, &enc_event, 0) != pdFALSE) {
         reset_display_timeout();
         if (enc_event.type != RE_ET_CHANGED) {
@@ -139,19 +181,36 @@ static void init_item_styles(void) {
     styles_initialized = true;
 }
 
+static void update_sidebar_state(bool show_sidebar) {
+    if (show_sidebar) {
+        lv_obj_set_size(scr_container, LV_HOR_RES - SIDEBAR_W, LV_VER_RES - STATUS_BAR_H);
+    } else {
+        lv_obj_set_size(scr_container, LV_HOR_RES, LV_VER_RES - STATUS_BAR_H);
+    }
+
+    lv_obj_set_flag(sidebar, LV_OBJ_FLAG_HIDDEN, !show_sidebar);
+    sidebar_shown = show_sidebar;
+}
+
 /*
 A callback function that calls load_system_state() as defined in lcd.c to update the gui_task with the desired GUI state change.
 Called from create_sidebar_item().
+If encoder button is pressed but the sidebar is not being shown, this function will show the sidebar and not cause any state change.
 */
-static void sidebar_item_event_cb(lv_event_t *e)
-{
+static void sidebar_item_event_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
 
-    system_state_t state = (system_state_t)lv_event_get_user_data(e);
+    if (sidebar_shown) {
+        system_state_t state = (system_state_t)lv_event_get_user_data(e);
+    
+        if (_TESTING) ESP_LOGI(TAG, "sidebar_item_event_cb() got passed a LV_EVENT_CLICKED: %d", (state));
+    
+        load_system_state(state);
 
-    if (_TESTING) ESP_LOGI(TAG, "sidebar_item_event_cb() got passed a LV_EVENT_CLICKED: %d", (state));
-
-    load_system_state(state);
+        update_sidebar_state(false);
+    } else {
+        update_sidebar_state(true);
+    }
 }
 
 /*
@@ -195,6 +254,8 @@ void create_sidebar_item(const char *label_text, system_state_t gui_state) {
     lv_obj_remove_flag(item, LV_OBJ_FLAG_SCROLLABLE);
 
     // Event callback
+    // This sidebar item is now registered to the system_state_t passed to create_sidebar_item
+    // When LV_EVENT_CLICKED is triggered, this state will be passed to load_system_state() through sidebar_item_event_cb()
     lv_obj_add_event_cb(item, sidebar_item_event_cb, LV_EVENT_CLICKED, (void *)gui_state);
 
     // Add item to the encoder group
@@ -216,8 +277,8 @@ void create_sidebar(void) {
     sidebar = lv_obj_create(root_scr);
 
     // Size & alignment
-    lv_obj_set_size(sidebar, SIDEBAR_W, LV_VER_RES);
-    lv_obj_align(sidebar, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_size(sidebar, SIDEBAR_W, LV_VER_RES - STATUS_BAR_H);
+    lv_obj_align(sidebar, LV_ALIGN_TOP_RIGHT, 0, 0);
 
     // Flex layout for vertical stacking of buttons
     lv_obj_set_layout(sidebar, LV_LAYOUT_FLEX);
@@ -238,6 +299,8 @@ void create_sidebar(void) {
     lv_obj_set_style_bg_color(sidebar, lv_color_make(200, 200, 200), 0);
     lv_obj_set_style_bg_opa(sidebar, LV_OPA_COVER, 0);
 
+    lv_obj_set_style_radius(sidebar, 0, 0);
+
     // Initialize encoder input for sidebar
     init_sidebar_input();
 
@@ -253,9 +316,11 @@ void create_sidebar(void) {
     if (focus_item) {
         lv_group_focus_obj(focus_item);
     }
+
+    // Make the sidebar able to be hidden
+    lv_obj_add_flag(sidebar, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_flag(sidebar, LV_OBJ_FLAG_HIDDEN, false);
 }
-
-
 
 // -------------------------
 // Boot Screen
@@ -279,6 +344,9 @@ static void create_boot_screen() {
     lv_obj_align(boot_bar, LV_ALIGN_CENTER, 0, 40);
 }
 
+/*
+Callback to exit the system from boot state and enter the nominal use state.
+*/
 static void boot_bar_completed_cb() {
     // Replace boot screen with main root screen container
     lv_screen_load(root_scr);
@@ -310,10 +378,11 @@ void show_boot_screen() {
     
     // Initialize LVGL objects for boot screen
     create_boot_screen();
-    // Turn on LCD backlight
-    set_led_pwm(100);
     // Show boot screen
     lv_screen_load(boot_scr);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    // Turn on LCD backlight
+    set_led_pwm(100);
     // Activate boot bar animation
     // Enters main screen upon completion
     start_boot_bar_animation();
@@ -335,6 +404,7 @@ static void create_main_screen(void) {
     lv_obj_set_style_bg_opa(main_scr, LV_OPA_COVER, 0);
     lv_obj_set_size(main_scr, lv_pct(100), lv_pct(100));
     lv_obj_align(main_scr, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(main_scr, 0, 0);
 
     lv_obj_t *text = lv_label_create(main_scr);
     lv_label_set_text(text, "Welcome to PulsePioneer\n\n<Insert Setup Instructions Here>");
@@ -407,6 +477,7 @@ static void create_ECG_screen(uint8_t num_charts) {
     lv_obj_set_size(ecg_scr, lv_pct(100), lv_pct(100));
     lv_obj_align(ecg_scr, LV_ALIGN_CENTER, 0, 0);
     lv_obj_remove_flag(ecg_scr, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(ecg_scr, 0, 0);
 
     ecg_scr_label = lv_label_create(ecg_scr);
     lv_label_set_text(ecg_scr_label, "Calibrating ECG. One moment please...");
@@ -458,6 +529,8 @@ Container function for initializing all main GUI screens using LVGL.
 */
 void create_LVGL_screens() {
     if (_TESTING) ESP_LOGI(TAG, "In create_LVGL_screens()");
+    // Make system status bar
+    create_status_bar();
     // Make container for GUI subscreens
     create_scr_container();
     // Initialize LVGL objects for main screen and hide the screen

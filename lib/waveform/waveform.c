@@ -100,6 +100,14 @@ static void update_ecg_fixed_axis(lv_waveform_t *waveform, int32_t val) {
 
 }
 
+bool is_plot_calibrated() {
+    if (ecg_axis_locked){
+        return ecg_axis_locked;
+    } else {
+        return false;
+    }
+}
+
 /*
 Checks that the passed waveform pointer has been initialized.
 Use create_waveform_plot() prior to calling this function.
@@ -120,7 +128,9 @@ void update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t n
 
         lv_chart_set_next_value(chart, waveform->ch1, val);
 
-        update_ecg_fixed_axis(waveform, val);
+        if (!ecg_axis_locked) {
+            update_ecg_fixed_axis(waveform, val);
+        }
     }
 
 }
@@ -186,6 +196,9 @@ bool test_waveform_plot(lv_waveform_t *waveform) {
 
     if (!waveform_test_queue) {
         waveform_test_queue = xQueueCreate(queue_size, sizeof(ecg_sample_t));
+    }
+    if (!waveform_test_queue) {
+        ESP_LOGE(TAG, "waveform_test_queue could not be created.");
     }
     if (_TESTING) ESP_LOGI(TAG, "Created queue");
 

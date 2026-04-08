@@ -48,15 +48,9 @@ const gpio_num_t ENC_SW_PIN = 8;
 
 #define SPI_HW_MAX_BYTES (32 * 1024) // Safe Direct Memory Addressing (DMA) limit
 
-// static lv_obj_t *boot_scr = NULL;
-// static lv_obj_t *main_scr = NULL;
-// static lv_obj_t *ecg_scr = NULL;
-
 static esp_lcd_panel_handle_t panel_handle = NULL;
 static esp_lcd_panel_io_handle_t io_handle = NULL;
 
-// static spi_device_handle_t lcd_spi_handle;
-// static spi_host_device_t lcd_host_device;
 static TaskHandle_t lcd_timeout_handle = NULL;
 static gptimer_handle_t timer_handle = NULL;
 
@@ -82,25 +76,6 @@ void set_led_pwm(uint8_t p) {
     ESP_ERROR_CHECK(ledc_set_duty(LED_PWM_SPEED_MODE, LED_PWM_CHANNEL, (p * ((1 << TIMER_DUTY_RESOLUTION) - 1)) / 100));
     ESP_ERROR_CHECK(ledc_update_duty(LED_PWM_SPEED_MODE, LED_PWM_CHANNEL));
 }
-
-// static void lcd_reset() {
-//     uint32_t current_ledc_duty = ledc_get_duty(LED_PWM_SPEED_MODE, LED_PWM_CHANNEL);
-//     if (current_ledc_duty != LEDC_ERR_DUTY) {       // turn off backlight before reset
-//         set_led_pwm(0);
-//         vTaskDelay(pdMS_TO_TICKS(20));
-//     }
-
-//     // Reset
-//     gpio_set_level(LCD_RST_PIN, 0);     // reset with enable-low
-//     vTaskDelay(pdMS_TO_TICKS(20));
-//     gpio_set_level(LCD_RST_PIN, 1);     // disable
-//     vTaskDelay(pdMS_TO_TICKS(20));
-
-//     if (current_ledc_duty != LEDC_ERR_DUTY) {       // turn backlight on after reset
-//         set_led_pwm(100);
-//         vTaskDelay(pdMS_TO_TICKS(20));
-//     }
-// }
 
 static bool display_dimmed = false;
 static bool IRAM_ATTR lcd_timeout_callback(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_data) {
@@ -137,7 +112,7 @@ static void init_timeout() {
 
     gptimer_alarm_config_t timer_alarm_config = {};
     if (_TESTING) {
-        timer_alarm_config.alarm_count = 6000000;       // 60,000,000 ticks (1 minute) -> 10 minutes
+        timer_alarm_config.alarm_count = 60000000;       // 60,000,000 ticks (1 minute)
     }
     else {
         timer_alarm_config.alarm_count = 600000000;       // 600,000,000 ticks (10 minutes)
@@ -202,7 +177,6 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *co
         pixels[i] = bswap16(pixels[i]);
     }
 
-    // ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel_handle, x1, y1, x2, y2, pixels));
     ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel_handle, x1, y1, x2+1, y2+1, pixels));
     
     lv_display_flush_ready(disp);
@@ -269,7 +243,13 @@ static void init_encoder(void) {
     if (_TESTING) ESP_LOGI(TAG, "In init_encoder()");
 
     enc_queue = xQueueCreate(8, sizeof(rotary_encoder_event_t));
+    if (!enc_queue) {
+        ESP_LOGE(TAG, "enc_queue could not be created.");
+    }
     forwarded_enc_queue = xQueueCreate(8, sizeof(rotary_encoder_event_t));
+    if (!forwarded_enc_queue) {
+        ESP_LOGE(TAG, "forwarded_enc_queue could not be created.");
+    }
 
     ESP_ERROR_CHECK(rotary_encoder_init(enc_queue));
 
@@ -279,7 +259,6 @@ static void init_encoder(void) {
 
 
     ESP_ERROR_CHECK(rotary_encoder_add(&enc));
-    // ESP_ERROR_CHECK(rotary_encoder_enable_acceleration(&enc, 16));
 
     if (_TESTING) ESP_LOGI(TAG, "Rotary encoder was successfully initialized.");
 }
@@ -313,36 +292,15 @@ void load_system_state(system_state_t new_state) {
             if (_TESTING) ESP_LOGW(TAG, "main_scr or ecg_scr still NULL prior to load_system_state()");
         }
 
-        // if (gui_task_handle) {
-            if (_TESTING) ESP_LOGI(TAG, "Switched system state to %d", new_state);
-            xTaskNotifyGive(gui_task_handle);   // notify the GUI task
-        // } else {
-            // if (_TESTING) ESP_LOGW(TAG, "State change received, but gui_task_handle is still undefined.");
-        // }
+        if (_TESTING) ESP_LOGI(TAG, "Switched system state to %d", new_state);
+        xTaskNotifyGive(gui_task_handle);   // notify the GUI task
+
     } else if (system_state == GUI_BOOT) {
         if (_TESTING) ESP_LOGI(TAG, "Processing initial state change.");
         system_state = new_state;
         xTaskNotifyGive(gui_task_handle);
     }
 
-    // if (system_state != new_state) {
-    //     system_state = new_state;
-
-    //     if (main_scr && ecg_scr) {
-    //         lv_obj_set_flag(main_scr, LV_OBJ_FLAG_HIDDEN, true);
-    //         lv_obj_set_flag(ecg_scr, LV_OBJ_FLAG_HIDDEN, true);
-    //     } else {
-    //         if (_TESTING) ESP_LOGW(TAG, "main_scr or ecg_scr still NULL prior to load_system_state()");
-    //     }
-
-    //     if (gui_task_handle) {
-    //         if (_TESTING) ESP_LOGI(TAG, "Switched system state to %d", new_state);
-    //         xTaskNotifyGive(gui_task_handle);   // notify the GUI task
-    //     } else {
-    //         if (_TESTING) ESP_LOGW(TAG, "State change received, but gui_task_handle is still undefined.");
-    //     }
-
-    // }
 }
 
 // ------------------------------
@@ -440,6 +398,11 @@ void lvgl_task(void *pvParameters) {
     if (!lvgl_cmd_queue) {
         lvgl_cmd_queue = xQueueCreate(4, sizeof(lvgl_cmd_t));
     }
+
+    if (!lvgl_cmd_queue) {
+        ESP_LOGE(TAG, "lvgl_cmd_queue could not be created.");
+    }
+
     lvgl_cmd_t cmd;
 
     const TickType_t delay = pdMS_TO_TICKS(10);
@@ -504,9 +467,7 @@ static void poll_gpio() {
         enc_event.type = RE_ET_CHANGED;
         enc_event.diff = inc_val;
 
-        // xQueueSend(enc_queue, &enc_event, 0);        // remove
-        // TODO: test passing the proprietary position detection to the forwarded_enc_queue
-        //      such that only button presses from encoder.c are passed to enc_queue DONE
+        //  Pass the position detection to the forwarded_enc_queue so that it can be directly processed by enc_read() in gui.c    
         xQueueSend(forwarded_enc_queue, &enc_event, 0);
 
         if (_TESTING) ESP_LOGI(TAG, "New position diff: %" PRIi8, inc_val);
@@ -582,6 +543,9 @@ void gui_task(void *pvParameters) {
 
     if (!lvgl_cmd_queue) {
         lvgl_cmd_queue = xQueueCreate(4, sizeof(lvgl_cmd_t));
+    }
+    if (!lvgl_cmd_queue) {
+        ESP_LOGE(TAG, "lvgl_cmd_queue could not be created.");
     }
 
     // Always run boot screen first

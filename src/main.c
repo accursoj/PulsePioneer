@@ -9,10 +9,12 @@
 #include "led_strip_rmt.h"
 #include "sdkconfig.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 
 #include "ecg.h"
 #include "lcd.h"
 #include "gui.h"
+#include "tflm_wrapper.h"
 
 static const char *TAG = "main.c";
 
@@ -26,6 +28,7 @@ static TaskHandle_t ecg_stream_task_handle = NULL;
 static TaskHandle_t lvgl_task_handle = NULL;
 static TaskHandle_t input_task_handle = NULL;
 static TaskHandle_t gui_task_handle = NULL;
+static TaskHandle_t inference_task_handle = NULL;
 
 void init_gpio() {
     if (_TESTING) ESP_LOGI(TAG, "In init_gpio()");
@@ -82,17 +85,6 @@ void init_rgb_indicator(void) {
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &strip_rmt_config, &board_led_handle));
 }
 
-// void show_rgb_led(uint32_t color_r, uint32_t color_g, uint32_t color_b, uint32_t brightness) {
-//     if (_TESTING) ESP_LOGI(TAG, "In show_rgb_led()");
-//     ESP_ERROR_CHECK(led_strip_set_pixel(
-//         board_led_handle,
-//         (0 * brightness) / 255,
-//         (color_r * brightness) / 255,
-//         (color_g * brightness) / 255,
-//         (color_b * brightness) / 255));
-//     ESP_ERROR_CHECK(led_strip_refresh(board_led_handle));
-// }
-
 void start_deep_sleep() {
     if (_TESTING) ESP_LOGI(TAG, "In start_deep_sleep()");
     if (esp_sleep_is_valid_wakeup_gpio(POWER_PIN))      // check if GPIO3 can enable ext0 wakeup
@@ -121,6 +113,8 @@ void start_system_boot() {
     if (INCLUDE_ECG) init_ecg();
     if (INCLUDE_LCD) init_lcd();
 
+    tflm_init();
+
     show_rgb_led(0, 255, 0, RGB_LED_BRIGHTNESS);        // green
 }
 
@@ -130,20 +124,15 @@ void power_down() {
     // TODO: safe power down for all modules
 }
 
-// TaskHandle_t get_gui_task_handle(void) {
-//     return gui_task_handle;
-// }
-
-// TaskHandle_t get_ecg_stream_task_handle(void) {
-//     return ecg_stream_task_handle;
-// }
-
-void app_main()
-{
+void app_main() {
     if (_TESTING) ESP_LOGI(TAG, "In app_main()");
     start_system_boot();
 
-    // Create ECG streaming task with priority=4 on cpu=1
+    // if (!set_wdt()) {
+    //     return;
+    // }
+
+    // Create ECG streaming task with priority=4 on cpu=0
     if (INCLUDE_ECG) {
         if (xTaskCreatePinnedToCore(ecg_stream_task, "ecg_stream_task", 8192, NULL, 4, &ecg_stream_task_handle, 0) != pdPASS) {
             ESP_LOGE(TAG, "ECG stream task could not be created.");
@@ -157,7 +146,8 @@ void app_main()
         xTaskCreatePinnedToCore(lvgl_task, "lvgl_task", 8192, NULL, 3, &lvgl_task_handle, 1);
         xTaskCreatePinnedToCore(input_task, "input_task", 4096, NULL, 10, &input_task_handle, 1);
         xTaskCreatePinnedToCore(gui_task, "gui_task", 4096, NULL, 5, &gui_task_handle, 1);
-        
+        xTaskCreatePinnedToCore(inference_task, "inference_task", 4096, NULL, 5, &inference_task_handle, 0);
+
         pass_gui_task_handle(&gui_task_handle);
     }   
 
@@ -168,6 +158,7 @@ void app_main()
     if (INCLUDE_LCD && lvgl_task_handle) ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark2(lvgl_task_handle) returned %ld", uxTaskGetStackHighWaterMark2(lvgl_task_handle));
     if (INCLUDE_LCD && input_task_handle) ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark2(input_task_handle) returned %ld", uxTaskGetStackHighWaterMark2(input_task_handle));
     if (INCLUDE_LCD && gui_task_handle) ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark2(gui_task_handle) returned %ld", uxTaskGetStackHighWaterMark2(gui_task_handle));
+    if (INCLUDE_LCD && inference_task_handle) ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark2(inference_task_handle) returned %ld", uxTaskGetStackHighWaterMark2(inference_task_handle));
 
 
     // Wait indefinitely while tasks run
