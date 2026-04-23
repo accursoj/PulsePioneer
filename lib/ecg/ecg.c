@@ -493,10 +493,18 @@ void stream_ecg_data() {
                 decim = 0;
 
                 if (!uxQueueSpacesAvailable(ecg_sample_queue)) {
-                    ESP_LOGW(TAG, "ecg_sample_queue overflowed. Dequeing first sample...");
+                    ESP_LOGW(TAG, "ecg_sample_queue overflowed. Resetting queues...");
 
-                    ecg_sample_t dummy;
-                    xQueueReceive(ecg_sample_queue, &dummy, 0);
+                    while (uxQueueSpacesAvailable(ecg_sample_queue) != ECG_QUEUE_SIZE) {
+                        ecg_sample_t dummy;
+                        xQueueReceive(ecg_sample_queue, &dummy, 0);
+                    }
+                    while (uxQueueSpacesAvailable(ecg_data_model_input_queue) != MODEL_QUEUE_SIZE) {
+                        int32_t dummy;
+                        xQueueReceive(ecg_data_model_input_queue, &dummy, 0);
+                    }
+                    ESP_LOGI(TAG, "ecg_sample_queue and ecg_data_model_input_queue EMPTIED");
+                    return;
                 }
 
                 if (xQueueSend(ecg_sample_queue, &sample, 0) != pdTRUE) {
@@ -516,10 +524,6 @@ void stream_ecg_data() {
                         
                         // Empty the queue completely to invalidate the corrupted window
                         xQueueReceive(ecg_data_model_input_queue, &dummy, 0);
-
-                        // while (xQueueReceive(ecg_data_model_input_queue, &dummy, 0) == pdTRUE) {
-                        //     // Loop until the queue is completely empty
-                        // }
                         
                     }
                     // Push the current sample to start building a fresh, contiguous window

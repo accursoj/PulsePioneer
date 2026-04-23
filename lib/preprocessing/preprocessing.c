@@ -198,27 +198,18 @@ bool create_input_buffer(float *model_input_buffer, int32_t *raw_samples, float 
     ESP_LOGI(TAG,"Last 15 resampled samples:");
     for(int i=MODEL_INPUT_SIZE-1;i>MODEL_INPUT_SIZE-17;i--) ESP_LOGI(TAG,"%f", model_input_buffer[i]);
 
-    // // 2. MEAN-CENTER (Crucial step to prevent IIR step response)
-    // float baseline_mean = 0.0f;
-    // for (int i = 0; i < MODEL_INPUT_SIZE; i++) {
-    //     baseline_mean += model_input_buffer[i];
-    // }
-    // baseline_mean /= MODEL_INPUT_SIZE;
+    // 2. MEAN-CENTER (Crucial step to prevent IIR step response)
+    float baseline_mean = 0.0f;
+    for (int i = 0; i < MODEL_INPUT_SIZE; i++) {
+        baseline_mean += model_input_buffer[i];
+    }
+    baseline_mean /= MODEL_INPUT_SIZE;
     
-    // for (int i = 0; i < MODEL_INPUT_SIZE; i++) {
-    //     model_input_buffer[i] -= baseline_mean;
-    // }
-    // ESP_LOGI(TAG,"First 15 baselined samples:");
-    // for(int i=0;i<15;i++) ESP_LOGI(TAG,"%f", model_input_buffer[i]);
-    // 1. Remove DC offset BEFORE filtering to prevent step-response artifacts.
-    float mean = 0.0f;
     for (int i = 0; i < MODEL_INPUT_SIZE; i++) {
-        mean += model_input_buffer[i];
+        model_input_buffer[i] -= baseline_mean;
     }
-    mean /= MODEL_INPUT_SIZE;
-    for (int i = 0; i < MODEL_INPUT_SIZE; i++) {
-        model_input_buffer[i] -= mean;
-    }
+    ESP_LOGI(TAG,"First 15 baselined samples:");
+    for(int i=0;i<15;i++) ESP_LOGI(TAG,"%f", model_input_buffer[i]);
 
     // For production:
     // Cast and filter each sample
@@ -227,12 +218,8 @@ bool create_input_buffer(float *model_input_buffer, int32_t *raw_samples, float 
     //     // Apply bandpass filter
     //     // filtered[i] = bandpass_filter((float)raw_samples[i].ch1);
     //     // filtered[i] = bandpass_filter(filtered[i]);
-    // 2. Reset the filter's internal state for this new, independent window.
-    reset_bandpass_states();
 
-    // 3. Apply the bandpass filter to the clean, mean-centered signal.
-    for (int i = 0; i < MODEL_INPUT_SIZE; i++) {
-        model_input_buffer[i] = bandpass_filter(model_input_buffer[i]);
+        // model_input_buffer[i] = bandpass_filter(model_input_buffer[i]);
 
     //     // // Cast channel 1 from int32_t to float
     //     // filtered[i] = (float)raw_samples[i].ch1;
@@ -253,7 +240,6 @@ bool create_input_buffer(float *model_input_buffer, int32_t *raw_samples, float 
     for(int i=MODEL_INPUT_SIZE-1;i>MODEL_INPUT_SIZE-17;i--) ESP_LOGI(TAG,"%f", model_input_buffer[i]);
 
     // Normalize signal (zero mean, unit variance)
-    // 4. Normalize the filtered signal for the model.
     normalize(model_input_buffer, MODEL_INPUT_SIZE);
 
     ESP_LOGI(TAG,"First 15 normalized samples:");

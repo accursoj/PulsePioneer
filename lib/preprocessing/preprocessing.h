@@ -31,7 +31,7 @@ typedef struct {
     int32_t ch3;
 } ecg_sample_t;
 
-// bool create_input_buffer(float *model_input_buffer, int32_t *raw_samples, float *filtered, int num_received_samples);
+bool create_input_buffer(float *model_input_buffer, int32_t *raw_samples, float *filtered, int num_received_samples);
 
 
 #endif // PULSEPIONEER_PREPROCESSING_H

@@ -148,7 +148,7 @@ void app_main() {
     //              Use high uxPriority values for critical tasks
     if (INCLUDE_LCD) {
         // Create the inference task(implemented in tflm_wrapper.cc) with priority=1 on core 0
-        xTaskCreatePinnedToCore(inference_task, "inference_task", 4096, NULL, 1, &inference_task_handle, 0);
+        xTaskCreatePinnedToCore(inference_task, "inference_task", 8196, NULL, 1, &inference_task_handle, 0);
         // Create the LVGL task (implemented in lcd.c) with priority=3 on core 1
         xTaskCreatePinnedToCore(lvgl_task, "lvgl_task", 8192, NULL, 3, &lvgl_task_handle, 1);
         // Create the user input task (implemented in lcd.c) with priority=10 on core 1

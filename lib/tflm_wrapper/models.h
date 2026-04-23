@@ -12,3 +12,6 @@ extern const unsigned int test_data_2_len;
 
 extern const int32_t raw_data[];
 extern const unsigned int raw_data_len;
+
+extern const unsigned char model_v4_1_tflite[];
+extern const unsigned int model_v4_1_tflite_len;
