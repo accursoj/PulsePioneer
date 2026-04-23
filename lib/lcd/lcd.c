@@ -17,15 +17,23 @@
 #include "esp_task_wdt.h"
 #include "demos/lv_demos.h"
 #include "encoder.h"
+#include "esp_sleep.h"
+#include "esp_heap_caps.h"
 
-#include "ecg.h"
-#include "waveform.h"
-#include "gui.h"
+#include "../ecg/ecg.h"
+#include "../waveform/waveform.h"
+#include "../gui/gui.h"
+#include "../tflm_wrapper/tflm_wrapper.h"
+#include "../preprocessing/preprocessing.h"
 
 #include "esp_log.h"
 static const char *TAG = "lcd.c";
 
+// const char* output_classes[3] = {"AFIB  ", "NORMAL", "VFIB  "};
+
 const gpio_num_t LED_CS_PIN = 1;
+
+const gpio_num_t POWER_BTN_PIN = 3;
 
 const gpio_num_t LCD_SDO_PIN = 4;
 const gpio_num_t LCD_SCK_PIN = 5;
@@ -40,7 +48,7 @@ const gpio_num_t ENC_SW_PIN = 8;
 
 #define LCD_H_RES 480
 #define LCD_V_RES 320
-#define LINES_PER_DMA 40
+#define LINES_PER_DMA 20
 #define PIXEL_CLK_FREQ 40 * 1000 * 1000
 #define TIMER_DUTY_RESOLUTION 10
 #define LED_PWM_SPEED_MODE LEDC_LOW_SPEED_MODE
@@ -54,8 +62,13 @@ static esp_lcd_panel_io_handle_t io_handle = NULL;
 static TaskHandle_t lcd_timeout_handle = NULL;
 static gptimer_handle_t timer_handle = NULL;
 
-TaskHandle_t gui_task_handle = NULL;
-TaskHandle_t ecg_stream_task_handle = NULL;
+// QueueHandle_t model_output_queue = NULL;
+
+SemaphoreHandle_t xLVGLSemaphore = NULL;
+
+QueueHandle_t enc_queue = NULL;
+QueueHandle_t forwarded_enc_queue = NULL;
+rotary_encoder_t enc = {};
 
 char system_state;
 
@@ -112,7 +125,7 @@ static void init_timeout() {
 
     gptimer_alarm_config_t timer_alarm_config = {};
     if (_TESTING) {
-        timer_alarm_config.alarm_count = 60000000;       // 60,000,000 ticks (1 minute)
+        timer_alarm_config.alarm_count = 300000000;       // 300,000,000 ticks (5 minutes)
     }
     else {
         timer_alarm_config.alarm_count = 600000000;       // 600,000,000 ticks (10 minutes)
@@ -190,8 +203,8 @@ static void init_lvgl(void) {
     if (_TESTING) ESP_LOGI(TAG, "In init_lvgl()");
     lv_init();
     lv_tick_set_cb(lv_tick_cb);
-    static lv_color_t buf1[LCD_H_RES * 40];
-    static lv_color_t buf2[LCD_H_RES * 40];
+    static lv_color_t buf1[LCD_H_RES * LINES_PER_DMA];
+    static lv_color_t buf2[LCD_H_RES * LINES_PER_DMA];
 
     lv_display_t *disp = lv_display_create(LCD_H_RES, LCD_V_RES);
     lv_display_set_buffers(disp, buf1, buf2, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
@@ -236,9 +249,7 @@ static void init_st7796(void) {
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
 }
 
-QueueHandle_t enc_queue = NULL;
-QueueHandle_t forwarded_enc_queue = NULL;
-rotary_encoder_t enc = {};
+
 static void init_encoder(void) {
     if (_TESTING) ESP_LOGI(TAG, "In init_encoder()");
 
@@ -357,26 +368,28 @@ void init_lcd() {
     if (_TESTING) ESP_LOGI(TAG, "init_lcd() was successfully completed.");
 }
 
-static bool sent_task_resume = false;
-const uint8_t max_samples_per_loop = 5;
 static void plot_ecg_data(void) {
     ecg_sample_t sample_buffer;
-    // Process a batch of samples that has size of max_samples_per_loop
-    for (uint8_t i = 0; i < max_samples_per_loop; i++) {
-        // Check if there is data to receive from the data queue
-        if (xQueueReceive(ecg_sample_queue, &sample_buffer, 0) != pdFALSE) {
-            update_waveform_plot(get_waveform_ptr(), &(sample_buffer.ch1), 1);
-            if (sent_task_resume) sent_task_resume = false;       // the task was resumed in order to get more data and thus reach this point in the code
-        } else {
-            // Resume streaming task to fill the empty queue with more data
-            if (!sent_task_resume) {
-                vTaskResume(ecg_stream_task_handle);
-                sent_task_resume = true;
-            }
-            break;
-        }
+    int32_t samples[20];
+    uint16_t count = 0;
+    
+    // Dynamically drain the queue to prevent LVGL UI from falling behind
+    while (count < 20 && xQueueReceive(ecg_sample_queue, &sample_buffer, 0) == pdTRUE) {
+        samples[count++] = sample_buffer.ch1;
+    }
+    
+    if (count > 0) {
+        // ESP_LOGI(TAG, "Updating plot with %u samples", count);
+        update_waveform_plot(get_waveform_ptr(), samples, count);
     }
 }
+
+static void render_prediction(float* output_buffer) {
+    uint8_t classified_idx = get_prediction_idx(output_buffer, 3);   // OUTPUT_SIZE (see tflm_wrapper.cc)
+    const char *output_class = output_classes[classified_idx];
+    update_data_bar_text(output_class, output_buffer[classified_idx]);
+}
+
 
 // ------------------------------
 // Main LVGL task
@@ -391,47 +404,86 @@ typedef enum {
 void lvgl_task(void *pvParameters) {
     if (_TESTING) ESP_LOGI(TAG, "Started lvgl_task()");
 
+    // Create the LVGL mutex
+    xLVGLSemaphore = xSemaphoreCreateMutex();
+    if (xLVGLSemaphore == NULL) {
+        ESP_LOGE(TAG, "Failed to create LVGL mutex. Deleting lvgl_task()...");
+        vTaskDelete(NULL);
+    }
+
     create_LVGL_screens();
 
-    ecg_stream_task_handle = get_ecg_stream_task_handle();
+    // model_output_queue = get_model_output_queue();
 
     if (!lvgl_cmd_queue) {
         lvgl_cmd_queue = xQueueCreate(4, sizeof(lvgl_cmd_t));
     }
-
     if (!lvgl_cmd_queue) {
         ESP_LOGE(TAG, "lvgl_cmd_queue could not be created.");
     }
 
     lvgl_cmd_t cmd;
 
+    // Allocate memory on the RAM heap for the output buffer
+    float *output_buffer = (float *)heap_caps_malloc(
+        3 * sizeof(float),
+        MALLOC_CAP_DEFAULT
+    );
+
     const TickType_t delay = pdMS_TO_TICKS(10);
 
     for (;;) {
-        if (xQueueReceive(lvgl_cmd_queue, &cmd, 0)) {
-            switch (cmd) {
-                case LVGL_CMD_SHOW_BOOT:
-                    show_boot_screen();
-                    break;
-                case LVGL_CMD_SHOW_MAIN:
-                    show_main_screen();
-                    break;
-                case LVGL_CMD_SHOW_ECG:
-                    show_ECG_screen();
-                    break;
-                case LVGL_CMD_RUN_WAVEFORM_TEST:
-                    test_waveform_plot(get_waveform_ptr());
-                    break;
-                default:
-                    break;
+        // // Lock the GUI. Wait indefinitely if another task is updating the UI.
+        // // ---- Add all LVGL operations within the Semaphore ---- //
+        // if (xSemaphoreTake(xLVGLSemaphore, pdMS_TO_TICKS(1000)) == pdTRUE) {
+
+            if (xQueueReceive(lvgl_cmd_queue, &cmd, 0)) {
+                switch (cmd) {
+                    case LVGL_CMD_SHOW_BOOT:
+                        show_boot_screen();
+                        break;
+                    case LVGL_CMD_SHOW_MAIN:
+                        show_main_screen();
+                        break;
+                    case LVGL_CMD_SHOW_ECG:
+                        show_ECG_screen();
+                        break;
+                    case LVGL_CMD_RUN_WAVEFORM_TEST:
+                        test_waveform_plot(get_waveform_ptr());
+                        break;
+                    default:
+                        break;
+                }
             }
-        }
-        
-        if (get_waveform_ptr() && ecg_sample_queue) {
-            plot_ecg_data();
-        }
-        lv_timer_handler();
+            
+            if (get_waveform_ptr() && ecg_sample_queue) {
+                plot_ecg_data();
+            }
+
+            if (model_output_queue) {
+                // Process the most recent model output and render the prediction
+                //  If empty, do nothing and continue immediately
+                if (xQueueReceive(model_output_queue, output_buffer, 0)) {
+                    render_prediction(output_buffer);
+                }
+            } else {
+                ESP_LOGE(TAG, "LVGL tried to use model_output_queue, but it was NULL.");
+                // model_output_queue = get_model_output_queue();
+            }
+
+            // Update the core LVGL handler
+            lv_timer_handler();
+
+            // // Unlock GUI for other tasks
+            // xSemaphoreGive(xLVGLSemaphore);
+        // } else {
+        //     ESP_LOGE(TAG, "xLVGLSemaphore was not returned to lvgl_task");
+        //     // Still update lvgl
+        //     lv_timer_handler();
+        // }
+
         vTaskDelay(delay);
+    
     }
 }
 
@@ -474,6 +526,35 @@ static void poll_gpio() {
     }
 }
 
+/*
+Turn the system to deep sleep (standby mode).
+If the system was just powered on, then 
+*/
+void start_deep_sleep(bool is_sys_on) {
+    if (_TESTING) ESP_LOGI(TAG, "In start_deep_sleep()");
+    if (esp_sleep_is_valid_wakeup_gpio(POWER_BTN_PIN))      // check if GPIO3 can enable ext0 wakeup
+    {
+        if (!is_sys_on) {
+            esp_sleep_enable_ext0_wakeup(POWER_BTN_PIN, 0);
+            ESP_LOGI(TAG, "Enabled EXT0 wakeup");
+        } else {
+            uint64_t gpio_power_btn_en_mask = 0x1 << POWER_BTN_PIN;
+            esp_sleep_enable_ext1_wakeup(gpio_power_btn_en_mask, ESP_EXT1_WAKEUP_ANY_LOW);
+            ESP_LOGI(TAG, "Enabled EXT1 wakeup");
+        }
+        ESP_LOGI(TAG, "ENTERING SYSTEM DEEP SLEEP...");
+        esp_deep_sleep_start();
+    }
+}
+
+static void poll_power_button() {
+    uint8_t is_pulled_high = gpio_get_level(POWER_BTN_PIN);
+
+    if (!is_pulled_high) {      // active-low button
+        start_deep_sleep(true);
+    }
+}
+
 void input_task(void *pvParameters) {
     if (_TESTING) ESP_LOGI(TAG, "Started input_task()");
 
@@ -488,6 +569,8 @@ void input_task(void *pvParameters) {
     for ( ;; ) {
         // Check GPIO states
         poll_gpio();
+
+        poll_power_button();
 
         // Check event queue for new events to be processed
         if (xQueueReceive(enc_queue, &enc_event, 0)) {
@@ -525,10 +608,6 @@ void input_task(void *pvParameters) {
 
         vTaskDelay(delay);
     }
-}
-
-void pass_gui_task_handle(TaskHandle_t *handle) {
-    gui_task_handle = *handle;
 }
 
 // -------------------

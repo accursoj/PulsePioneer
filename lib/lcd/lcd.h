@@ -2,13 +2,16 @@
 #define LCD_H
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "driver/gpio.h"
-#include <lvgl.h>
+#include <../lvgl/lvgl.h>
 
 // Enable LCD functionality
 #define INCLUDE_LCD 1
 
 extern const gpio_num_t LED_CS_PIN;
+
+extern const gpio_num_t POWER_BTN_PIN;
 
 extern const gpio_num_t LCD_SDO_PIN;
 extern const gpio_num_t LCD_SCK_PIN;
@@ -32,6 +35,9 @@ typedef enum {
 
 extern QueueHandle_t enc_queue;
 extern QueueHandle_t forwarded_enc_queue;
+extern QueueHandle_t model_output_queue;
+
+extern SemaphoreHandle_t xLVGLSemaphore;
 
 void set_led_pwm(uint8_t p);
 
@@ -39,9 +45,9 @@ void init_lcd(void);
 
 void lvgl_task(void *pvParameters);
 
-void input_task(void *pvParameters);
+void start_deep_sleep(bool is_sys_on);
 
-void pass_gui_task_handle(TaskHandle_t *handle);
+void input_task(void *pvParameters);
 
 void reset_display_timeout(void);
 

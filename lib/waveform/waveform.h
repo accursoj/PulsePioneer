@@ -6,9 +6,7 @@ extern "C" {
 
 #ifndef WAVEFORM_H
 #define WAVEFORM_H
-#include <stdint.h>
-#include <lvgl.h>
-#include "esp_log.h"
+#include <../lvgl/lvgl.h>
 
 typedef struct {
     lv_obj_t *chart;
@@ -23,6 +21,10 @@ extern bool broke_update_loop_flag;
 void create_chart_scale(lv_waveform_t *waveform);
 
 void update_waveform_plot(lv_waveform_t *waveform, int32_t *new_data, uint16_t new_data_size);
+
+void update_chart_scale(lv_waveform_t *waveform, int32_t enc_diff);
+
+void update_chart_offset(lv_waveform_t *waveform, int32_t enc_diff);
 
 bool is_plot_calibrated(void);
 

@@ -1,8 +1,14 @@
-#include "esp_timer.h"
-#include "waveform.h"
-#include "ecg.h"
-#include "lcd.h"
 #include <stdlib.h>
+#include <inttypes.h>
+
+#include "esp_timer.h"
+#include "esp_log.h"
+
+#include "../waveform/waveform.h"
+#include "../ecg/ecg.h"
+#include "../lcd/lcd.h"
+#include "../preprocessing/preprocessing.h"
+#include "../gui/gui.h"
 
 #define _TESTING 1
 
@@ -10,10 +16,13 @@ static const char *TAG = "waveform.c";
 
 bool broke_update_loop_flag = false;
 
-#define ECG_CALIBRATION_SAMPLES     1000
+#define ECG_CALIBRATION_SAMPLES     300
 #define ECG_AXIS_PADDING_PERCENT    0.05f
 
 #define ECG_Y_TICK_COUNT 2   // Only min and max
+
+static int32_t ch1_axis_min = 0;
+static int32_t ch1_axis_max = 0;
 
 /*
 Create and assign an LVGL scale object to the passed waveform.
@@ -40,7 +49,7 @@ void create_chart_scale(lv_waveform_t *waveform) {
     // Every tick is major
     lv_scale_set_major_tick_every(waveform->y_scale, 1);
     // Show labels
-    lv_scale_set_label_show(waveform->y_scale, true);
+    lv_scale_set_label_show(waveform->y_scale, false);
 }
 
 static bool ecg_axis_locked = false;
@@ -51,12 +60,26 @@ static void update_ecg_fixed_axis(lv_waveform_t *waveform, int32_t val) {
     if (ecg_axis_locked) {
         return;  // Axis already determined
     }
+    if (!ecg_scr) {
+        ESP_LOGE(TAG, "ecg_scr is null");
+        return;
+    }
+    if (lv_obj_has_flag(ecg_scr, LV_OBJ_FLAG_HIDDEN)) {
+        return;
+    }
 
     lv_obj_t *chart = waveform->chart;
 
+    if (ecg_sample_count == 0) {    // init
+        // Hide the chart
+        lv_obj_set_flag(chart, LV_OBJ_FLAG_HIDDEN, true);
+        lv_obj_set_flag(waveform->y_scale, LV_OBJ_FLAG_HIDDEN, true);
+
+        ESP_LOGI(TAG, "ECG plot calibration started.");
+    }
+
+
     // Hide chart and scale while calibrating
-    lv_obj_set_flag(chart, LV_OBJ_FLAG_HIDDEN, true);
-    lv_obj_set_flag(waveform->y_scale, LV_OBJ_FLAG_HIDDEN, true);
 
     // Update min/max during calibration phase
     if (val < ecg_min) ecg_min = val;
@@ -66,6 +89,7 @@ static void update_ecg_fixed_axis(lv_waveform_t *waveform, int32_t val) {
 
     // Lock axis once enough samples have been collected
     if (ecg_sample_count >= ECG_CALIBRATION_SAMPLES) {
+        // Hide the ecg screen
         lv_obj_add_flag(get_ecg_scr_label(), LV_OBJ_FLAG_HIDDEN);
 
         int32_t range = abs(ecg_max - ecg_min);
@@ -73,23 +97,23 @@ static void update_ecg_fixed_axis(lv_waveform_t *waveform, int32_t val) {
         
         int32_t padding = (int32_t)(range * ECG_AXIS_PADDING_PERCENT);
         
-        int32_t axis_min = ecg_min - padding;
-        int32_t axis_max = ecg_max + padding;
+        ch1_axis_min = ecg_min - padding;
+        ch1_axis_max = ecg_max + padding;
         
         // Set axis range
         lv_chart_set_axis_range(chart,
             LV_CHART_AXIS_PRIMARY_Y,
-            axis_min,
-            axis_max);
+            ch1_axis_min,
+            ch1_axis_max
+        );
             
-        ESP_LOGI(TAG, "ECG Plot Calibrated to %i through %i", axis_min, axis_max);
+        ESP_LOGI(TAG, "ECG plot calibration finished.");
+        ESP_LOGI(TAG, "ECG plot calibrated to %i through %i", ch1_axis_min, ch1_axis_max);
 
         // Set Y-axis ticks
         lv_scale_set_range(waveform->y_scale,
-                                axis_min,
-                                axis_max);
-
-        // lv_timer_handler();
+                                ch1_axis_min,
+                                ch1_axis_max);
 
         ecg_axis_locked = true;
 
@@ -100,12 +124,70 @@ static void update_ecg_fixed_axis(lv_waveform_t *waveform, int32_t val) {
 
 }
 
-bool is_plot_calibrated() {
-    if (ecg_axis_locked){
-        return ecg_axis_locked;
-    } else {
-        return false;
+void update_chart_scale(lv_waveform_t *waveform, int32_t enc_diff) {
+    const float scale = 0.5;
+
+    const int32_t ch1_range = ch1_axis_max - ch1_axis_min;
+    const int32_t ch1_amp = ch1_range / 2;
+    const int32_t ch1_center = ch1_amp + ch1_axis_min;
+
+    if (ch1_amp == 0) {
+        ESP_LOGE(TAG, "ch1_amp evaluated to 0. ch1_axis_min == ch1_axis_max. Returning from update_chart_scale...");
+        return;
     }
+
+    if (enc_diff > 0) {
+        ch1_axis_max = (int32_t) (ch1_center + (ch1_amp * (scale + 1)));
+        ch1_axis_min = (int32_t) (ch1_center - (ch1_amp * (scale + 1)));
+        if (_TESTING) ESP_LOGI(TAG, "Scaling chart up.");
+    } else {
+        ch1_axis_max = (int32_t) (ch1_center + (ch1_amp * scale));
+        ch1_axis_min = (int32_t) (ch1_center - (ch1_amp * scale));
+        if (_TESTING) ESP_LOGI(TAG, "Scaling chart down");
+    }
+    if (_TESTING) ESP_LOGI(TAG, "New chart scale: %"PRId32" - %"PRId32, ch1_axis_min, ch1_axis_max);
+    
+    lv_chart_set_axis_range(
+        waveform->chart,
+        LV_CHART_AXIS_PRIMARY_Y,
+        ch1_axis_min,
+        ch1_axis_max
+    );
+
+    return;     
+}
+
+void update_chart_offset(lv_waveform_t *waveform, int32_t enc_diff) {
+    const int32_t ch1_range = ch1_axis_max - ch1_axis_min;
+    if (ch1_range == 0) {
+        ESP_LOGE(TAG, "ch1_range evaluated to 0. ch1_axis_min == ch1_axis_max. Returning from update_chart_scale...");
+        return;
+    }
+    int32_t offset_val = (int32_t)(ch1_range / 10);
+
+    if (enc_diff > 0) {
+        ch1_axis_max += offset_val;
+        ch1_axis_min += offset_val;
+        if (_TESTING) ESP_LOGI(TAG, "Increasing chart offset");
+
+    } else {
+        ch1_axis_max -= offset_val;
+        ch1_axis_min -= offset_val;
+        if (_TESTING) ESP_LOGI(TAG, "Decreasing chart offset");
+    }
+
+    lv_chart_set_axis_range(
+        waveform->chart,
+        LV_CHART_AXIS_PRIMARY_Y,
+        ch1_axis_min,
+        ch1_axis_max
+    );
+
+    return; 
+}
+
+bool is_plot_calibrated() {
+    return ecg_axis_locked;
 }
 
 /*

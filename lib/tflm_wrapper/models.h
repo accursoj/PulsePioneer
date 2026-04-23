@@ -9,3 +9,6 @@ extern const unsigned int test_data_1_len;
 
 extern const float test_data_2[];
 extern const unsigned int test_data_2_len;
+
+extern const int32_t raw_data[];
+extern const unsigned int raw_data_len;

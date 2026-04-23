@@ -2,21 +2,37 @@
 Functions related to creating and controlling the LVGL graphical user interface.
 */
 
-#include "gui.h"
+#include "../gui/gui.h"
+#include "../lcd/lcd.h"
+
+#include "encoder.h"
+#include "esp_log.h"
 
 #define SIDEBAR_W 80
+#define DATA_BAR_H 20
 #define STATUS_BAR_H 20
+
+#define WAVEFORM_CHART_NUM_POINTS 125 // (for decim=128) //500 (for decim=32)
 
 #define _TESTING 1
 
+typedef enum {
+    OFFSET = 0,
+    SCALE = 1
+} chart_tool_t;
+
+lv_obj_t *data_bar = NULL;
+lv_obj_t *class_label = NULL;
+lv_obj_t *conf_label = NULL;
+
 lv_obj_t *status_bar = NULL;
-lv_obj_t *status_bar_label = NULL;
+lv_obj_t *status_label = NULL;
+lv_obj_t *tool_label = NULL;
 
 lv_obj_t *scr_container = NULL;
 lv_obj_t *ecg_scr_label;
 
 static lv_waveform_t *waveform_ptr = NULL;
-static TaskHandle_t ecg_stream_task_handle = NULL;
 
 static lv_obj_t *root_scr = NULL;
 static lv_obj_t *sidebar = NULL;
@@ -33,16 +49,9 @@ lv_obj_t *main_scr = NULL;
 lv_obj_t *ecg_scr = NULL;
 
 static bool sidebar_shown = true;
+static chart_tool_t chart_tool_state = OFFSET;      // = 0
 
-const char *TAG = "gui.c";
-
-void pass_ecg_stream_task_handle(TaskHandle_t *handle) {
-    ecg_stream_task_handle = *handle;
-}
-
-TaskHandle_t get_ecg_stream_task_handle() {
-    return ecg_stream_task_handle;
-}
+static const char *TAG = "gui.c";
 
 void create_root_screen(void) {
     if (_TESTING) ESP_LOGI(TAG, "In create_root_screen()");
@@ -50,7 +59,7 @@ void create_root_screen(void) {
 
     lv_obj_remove_flag(root_scr, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_set_style_bg_color(root_scr, lv_color_black(), 0);
+    lv_obj_set_style_bg_color(root_scr, lv_color_hex(0x121212), 0);
     lv_obj_set_style_bg_opa(root_scr, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(root_scr, 0, 0);
 
@@ -69,11 +78,25 @@ lv_obj_t *get_root_screen(void) {
     return root_scr;
 }
 
-void update_sys_state_text(const char *new_state_text) {
-    if (status_bar_label) {
-        lv_label_set_text_fmt(status_bar_label, "Status: %s", new_state_text);
+void update_sys_state_text(void *new_state_data) {
+    char *new_state_text = (char *)new_state_data;
+
+    if (status_label) {
+        // Safely update the text from within the LVGL task context
+        lv_label_set_text_fmt(status_label, "Status: %s", new_state_text);
+        if (_TESTING) ESP_LOGI(TAG, "Status bar (state) updated to: %s", new_state_text);
     } else {
-        if (_TESTING) ESP_LOGW(TAG, "update_sys_state_text(%s) was called but status_bar_label is not defined.", new_state_text);
+        if (_TESTING) ESP_LOGW(TAG, "update_sys_state_text(%s) was called but status_label is not defined.", new_state_text);
+    }
+}
+
+void update_tool_text(const char *new_tool_text) {
+    ESP_LOGI(TAG, "In update_tool_text()");
+    if (tool_label) {
+        lv_label_set_text_fmt(tool_label, "Tool: %s", new_tool_text);
+        if (_TESTING) ESP_LOGI(TAG, "Status bar (tool) updated.");
+    } else {
+        if (_TESTING) ESP_LOGW(TAG, "update_sys_state_text(%s) was called but tool_label is not defined.", new_tool_text);
     }
 }
 
@@ -84,21 +107,77 @@ static void create_status_bar() {
     }
 
     status_bar = lv_obj_create(root_scr);
-    lv_obj_set_size(status_bar, LV_HOR_RES, STATUS_BAR_H);
+    lv_obj_set_size(status_bar, LV_HOR_RES - SIDEBAR_W, STATUS_BAR_H);
+    lv_obj_set_layout(status_bar, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
     lv_obj_align(status_bar, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     lv_obj_set_style_pad_all(status_bar, 0, 0);
     lv_obj_set_style_border_width(status_bar, 0, 0);
     lv_obj_set_style_bg_opa(status_bar, LV_OPA_COVER, 0);
 
-    lv_obj_set_style_bg_color(status_bar, lv_color_make(50, 50, 50), 0);
+    lv_obj_set_style_bg_color(status_bar, lv_color_hex(0x252525), 0);
     lv_obj_set_style_radius(status_bar, 0, 0);
 
-    status_bar_label = lv_label_create(status_bar);
-    lv_obj_align(status_bar_label, LV_ALIGN_LEFT_MID, 0, 0);
-    lv_obj_set_style_text_color(status_bar_label, lv_color_white(), 0);
-    lv_label_set_text_fmt(status_bar_label, "Status: none");
+    // Create two labels inside data_bar
+    status_label = lv_label_create(status_bar);
+    lv_obj_set_style_text_color(status_label, lv_color_white(), 0);
+    lv_label_set_text_fmt(status_label, "Status: Ready");
+    // lv_label_set_text_fmt(status_label, "Status: --   ");
+
+    tool_label = lv_label_create(status_bar);
+    lv_obj_set_style_text_color(tool_label, lv_color_white(), 0);
+    lv_label_set_text_fmt(tool_label, "Tool: --  ");
 
     if (_TESTING) ESP_LOGI(TAG, "Returning from create_status_bar()");
+}
+
+void update_data_bar_text(const char *new_classification_text, float new_confidence_level) {
+    ESP_LOGI(TAG, "In update_data_bar_text()");
+    // Define the text buffer
+    char percent_confidence[25];
+    // Stuff the char buffer
+    snprintf(percent_confidence, sizeof(percent_confidence), "%.0f%%", 100 * new_confidence_level);     // remove decimals from float
+    if (class_label && conf_label) {
+        lv_label_set_text_fmt(class_label, "Classification: %s", new_classification_text);
+        lv_label_set_text_fmt(conf_label, "Confidence: %s", percent_confidence);
+        ESP_LOGI(TAG, "Data bar updated.");
+    } else {
+        if (_TESTING) ESP_LOGW(TAG, "update_data_bar_text(%s, %f) was called but data_bar_label is not defined.", new_classification_text, new_confidence_level);
+    }
+}
+
+static void create_data_bar() {
+    if (_TESTING) ESP_LOGI(TAG, "In create_data_bar()");
+    if (!root_scr) {
+        create_root_screen();
+    }
+
+    data_bar = lv_obj_create(root_scr);
+    lv_obj_set_size(data_bar, LV_HOR_RES - SIDEBAR_W, DATA_BAR_H);
+    lv_obj_set_layout(data_bar, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(data_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(data_bar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    
+    lv_obj_align(data_bar, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_set_style_pad_all(data_bar, 0, 0);
+    lv_obj_set_style_border_width(data_bar, 0, 0);
+    lv_obj_set_style_bg_opa(data_bar, LV_OPA_COVER, 0);
+
+    lv_obj_set_style_bg_color(data_bar, lv_color_hex(0x252525), 0);
+    lv_obj_set_style_radius(data_bar, 0, 0);
+
+    // Create two labels inside data_bar
+    class_label = lv_label_create(data_bar);
+    lv_obj_set_style_text_color(class_label, lv_color_white(), 0);
+    lv_label_set_text_fmt(class_label, "Classification: --");
+    
+    conf_label = lv_label_create(data_bar);
+    lv_obj_set_style_text_color(conf_label, lv_color_white(), 0);
+    lv_label_set_text_fmt(conf_label, "Confidence: --  ");
+
+    if (_TESTING) ESP_LOGI(TAG, "Returning from create_data_bar()");
 }
 
 static void create_scr_container(void) {
@@ -107,8 +186,8 @@ static void create_scr_container(void) {
             create_root_screen();
         }
         scr_container = lv_obj_create(root_scr);
-        lv_obj_align(scr_container, LV_ALIGN_TOP_LEFT, 0, 0);
-        lv_obj_set_size(scr_container, LV_HOR_RES - SIDEBAR_W, LV_VER_RES - STATUS_BAR_H);
+        lv_obj_align(scr_container, LV_ALIGN_TOP_LEFT, 0, DATA_BAR_H);      // offset down by the height of the data bar
+        lv_obj_set_size(scr_container, LV_HOR_RES - SIDEBAR_W, LV_VER_RES - DATA_BAR_H - STATUS_BAR_H);
         lv_obj_set_style_pad_all(scr_container, 0, 0);
         lv_obj_set_style_border_width(scr_container, 0, 0);
         lv_obj_set_style_bg_opa(scr_container, LV_OPA_TRANSP, 0);
@@ -124,21 +203,46 @@ Called from init_sidebar_input().
 */
 static void enc_read(lv_indev_t *indev, lv_indev_data_t *data) {
     if (xQueueReceive(forwarded_enc_queue, &enc_event, 0) != pdFALSE) {
+        // Reset display timeout due to recorded user input
         reset_display_timeout();
+
+        // Determine appropriate system functionality based on input event
         if (enc_event.type != RE_ET_CHANGED) {
             data->enc_diff = 0;
         } else {
-            data->enc_diff = enc_event.diff;
-            if (_TESTING) ESP_LOGI(TAG, "Enc Read sees encoder value changed");
+            data->enc_diff = enc_event.diff;    // modify encoder value in lv_indev
+            
+            // Only update chart axes if on ECG screen and if sidebar is not shown
+            if (!lv_obj_has_flag(ecg_scr, LV_OBJ_FLAG_HIDDEN) && !sidebar_shown) {
+                if (chart_tool_state) {
+                    update_chart_scale(waveform_ptr, enc_event.diff);
+                } else {
+                    update_chart_offset(waveform_ptr, enc_event.diff);
+                }
+                if (_TESTING) ESP_LOGI(TAG, "Enc Read sees encoder value changed");
+            }
+        }
+        if (enc_event.type == RE_ET_BTN_LONG_PRESSED) {
+            // Only update chart axes if on ECG screen
+            if (!lv_obj_has_flag(ecg_scr, LV_OBJ_FLAG_HIDDEN)) {
+                chart_tool_state = !chart_tool_state;
+                if (chart_tool_state) {   // 
+                    update_tool_text("Scale ");     // extra space to keep padding consistent
+                } else {
+                    update_tool_text("Offset");
+                }
+
+                if (_TESTING) ESP_LOGI(TAG, "Enc Read sees long button press");
+            }
         }
         
-        if (enc_event.type == RE_ET_BTN_CLICKED) {
-            data->state = LV_INDEV_STATE_PRESSED;
+        if (enc_event.type == RE_ET_BTN_CLICKED) {      // button pressed
+            data->state = LV_INDEV_STATE_PRESSED;   // modify lv_indev state
             if (_TESTING) ESP_LOGI(TAG, "Enc Read sees button pressed");
-        } else {
+        } else {    //  button released
             data->state = LV_INDEV_STATE_RELEASED;
         }
-    } else {
+    } else {    // no change
         data->enc_diff = 0;
         data->state = LV_INDEV_STATE_RELEASED;
     }
@@ -169,12 +273,13 @@ static void init_item_styles(void) {
     if (styles_initialized) return;
 
     lv_style_init(&def_item_style);
-    lv_style_set_bg_color(&def_item_style, lv_color_make(0, 0, 0));
+    lv_style_set_bg_color(&def_item_style, lv_color_hex(0x333333));
     lv_style_set_bg_opa(&def_item_style, LV_OPA_COVER);
     lv_style_set_text_color(&def_item_style, lv_color_white());
+    lv_style_set_border_width(&def_item_style, 0);
 
     lv_style_init(&hover_item_style);
-    lv_style_set_bg_color(&hover_item_style, lv_color_make(255, 255, 255));
+    lv_style_set_bg_color(&hover_item_style, lv_color_hex(0xdceaeb));
     lv_style_set_bg_opa(&hover_item_style, LV_OPA_COVER);
     lv_style_set_text_color(&hover_item_style, lv_color_black());
 
@@ -182,10 +287,16 @@ static void init_item_styles(void) {
 }
 
 static void update_sidebar_state(bool show_sidebar) {
+    // Update main container size
     if (show_sidebar) {
-        lv_obj_set_size(scr_container, LV_HOR_RES - SIDEBAR_W, LV_VER_RES - STATUS_BAR_H);
+        lv_obj_set_size(scr_container, LV_HOR_RES - SIDEBAR_W, LV_VER_RES - DATA_BAR_H - STATUS_BAR_H);
+        lv_obj_set_size(data_bar, LV_HOR_RES - SIDEBAR_W, DATA_BAR_H);
+        lv_obj_set_size(status_bar, LV_HOR_RES - SIDEBAR_W, STATUS_BAR_H);
+
     } else {
-        lv_obj_set_size(scr_container, LV_HOR_RES, LV_VER_RES - STATUS_BAR_H);
+        lv_obj_set_size(scr_container, LV_HOR_RES, LV_VER_RES - DATA_BAR_H - STATUS_BAR_H);
+        lv_obj_set_size(data_bar, LV_HOR_RES, DATA_BAR_H);
+        lv_obj_set_size(status_bar, LV_HOR_RES, STATUS_BAR_H);
     }
 
     lv_obj_set_flag(sidebar, LV_OBJ_FLAG_HIDDEN, !show_sidebar);
@@ -233,9 +344,9 @@ void create_sidebar_item(const char *label_text, system_state_t gui_state) {
     lv_obj_set_style_margin_bottom(item, 5, 0);
 
     // Borders
-    lv_obj_set_style_border_width(item, 2, 0);
-    lv_obj_set_style_border_color(item, lv_color_white(), 0);
-    lv_obj_set_style_border_opa(item, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(item, 0, 0);      // no border
+    // lv_obj_set_style_border_color(item, lv_color_white(), 0);
+    // lv_obj_set_style_border_opa(item, LV_OPA_COVER, 0);
 
     // Create default and focused/hover styles for background and text
     init_item_styles();
@@ -277,7 +388,7 @@ void create_sidebar(void) {
     sidebar = lv_obj_create(root_scr);
 
     // Size & alignment
-    lv_obj_set_size(sidebar, SIDEBAR_W, LV_VER_RES - STATUS_BAR_H);
+    lv_obj_set_size(sidebar, SIDEBAR_W, LV_VER_RES);
     lv_obj_align(sidebar, LV_ALIGN_TOP_RIGHT, 0, 0);
 
     // Flex layout for vertical stacking of buttons
@@ -296,8 +407,10 @@ void create_sidebar(void) {
     lv_obj_set_style_pad_right(sidebar, 5, 0);
 
     // Sidebar background color
-    lv_obj_set_style_bg_color(sidebar, lv_color_make(200, 200, 200), 0);
+    lv_obj_set_style_bg_color(sidebar, lv_color_hex(0x252525), 0);
     lv_obj_set_style_bg_opa(sidebar, LV_OPA_COVER, 0);
+
+    lv_obj_set_style_border_width(sidebar, 0, 0);   // no border
 
     lv_obj_set_style_radius(sidebar, 0, 0);
 
@@ -320,6 +433,18 @@ void create_sidebar(void) {
     // Make the sidebar able to be hidden
     lv_obj_add_flag(sidebar, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_flag(sidebar, LV_OBJ_FLAG_HIDDEN, false);
+}
+
+static void set_tool_text(bool is_ECG_shown) {
+    if (!is_ECG_shown) {
+        update_tool_text("--    ");     // extra space to keep padding consistent
+        return;
+    }
+    if (chart_tool_state) {   // 1 = scale
+        update_tool_text("Scale ");     // extra space to keep padding consistent
+    } else {                    // 0 = offset
+        update_tool_text("Offset");
+    }
 }
 
 // -------------------------
@@ -428,6 +553,9 @@ void show_main_screen(void) {
     // Show the screen
     lv_obj_set_flag(main_scr, LV_OBJ_FLAG_HIDDEN, false);
 
+    // No tool defined on home screen
+    set_tool_text(false);
+
     if(_TESTING) ESP_LOGI(TAG, "Returning from show_main_scr()");
 }
 
@@ -450,7 +578,7 @@ static void add_waveform_plot() {
     }
 
     if (!waveform_ptr->ch1) {
-        waveform_ptr->ch1 = lv_chart_add_series(waveform_ptr->chart, lv_palette_main(LV_PALETTE_YELLOW), LV_CHART_AXIS_PRIMARY_Y);
+        waveform_ptr->ch1 = lv_chart_add_series(waveform_ptr->chart, lv_palette_main(LV_PALETTE_BLUE), LV_CHART_AXIS_PRIMARY_Y);
     }
     if (!waveform_ptr->ch2) {
         waveform_ptr->ch2 = lv_chart_add_series(waveform_ptr->chart, lv_palette_main(LV_PALETTE_GREEN), LV_CHART_AXIS_PRIMARY_Y);
@@ -493,7 +621,11 @@ static void create_ECG_screen(uint8_t num_charts) {
     lv_chart_set_type(waveform.chart, LV_CHART_TYPE_LINE);
     // Set the number of data points shown on the chart at once
     // Effectively sets the data resolution of the chart
-    lv_chart_set_point_count(waveform.chart, 500);
+    lv_chart_set_point_count(waveform.chart, WAVEFORM_CHART_NUM_POINTS);
+    // Make individual points invisible
+    lv_obj_set_style_height(waveform.chart, 0, LV_PART_INDICATOR);
+    lv_obj_set_style_width(waveform.chart, 0, LV_PART_INDICATOR);
+    lv_obj_set_style_line_width(waveform.chart, 3, LV_PART_ITEMS);
     
     // Pack the constructed waveform into the global pointer
     waveform_ptr = &waveform;
@@ -519,6 +651,9 @@ void show_ECG_screen(void) {
     }
     // Show the ECG screen
     lv_obj_set_flag(ecg_scr, LV_OBJ_FLAG_HIDDEN, false);
+
+    set_tool_text(true);
+
     // Resume the ECG data streaming task
     vTaskResume(ecg_stream_task_handle);
     if (_TESTING) ESP_LOGI(TAG, "ecg_stream_task() resumed from show_ECG_screen().");
@@ -529,6 +664,8 @@ Container function for initializing all main GUI screens using LVGL.
 */
 void create_LVGL_screens() {
     if (_TESTING) ESP_LOGI(TAG, "In create_LVGL_screens()");
+    // Make system data bar
+    create_data_bar();
     // Make system status bar
     create_status_bar();
     // Make container for GUI subscreens
@@ -540,4 +677,3 @@ void create_LVGL_screens() {
     // Initialize LVGL objects for system menu sidebar
     create_sidebar();
 }
-

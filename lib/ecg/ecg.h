@@ -8,6 +8,7 @@ extern "C" {
 #define ECG_H
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/queue.h"
 #include <stdint.h>
 #include "driver/gpio.h"
@@ -24,19 +25,16 @@ extern const gpio_num_t ECG_CSB_PIN;
 extern const gpio_num_t ECG_ALAB_PIN;
 extern const gpio_num_t ECG_DRDB_PIN;
 
-// ECG sample structure
-typedef struct
-{
-    uint32_t timestamp_us;
-    uint8_t data_status;
-    int32_t ch1;
-    int32_t ch2;
-    int32_t ch3;
-} ecg_sample_t;
 
 // Queue handle for streaming samples
 extern QueueHandle_t ecg_sample_queue;
 
+// Task handle for the main ECG streaming task
+extern TaskHandle_t ecg_stream_task_handle;
+
+extern led_strip_handle_t board_led_handle;
+
+extern SemaphoreHandle_t rgb_led_mutex;
 extern led_strip_handle_t board_led_handle;
 
 // Initialize ECG SPI interface and ADS1293 registers
@@ -44,21 +42,15 @@ void init_ecg(void);
 
 void show_rgb_led(uint32_t color_r, uint32_t color_g, uint32_t color_b, uint32_t brightness);
 
-// Write single register to ADS1293
-// void write_ecg_data(uint8_t addr, uint8_t data);
-
-// Read one sample from ADS1293
-// void ecg_read_sample(uint8_t *status, int32_t *ch1, int32_t *ch2);
-
-// Stream ECG samples continuously to queue
-// void stream_ecg_data(void);
 
 // Power down ECG SPI interface
 void ecg_power_down(void);
 
 void ecg_stream_task(void *pvParameters);
 
-QueueHandle_t get_ecg_data_model_input_queue(void);
+// QueueHandle_t get_ecg_data_model_input_queue(void);
+
+void pass_rgb_led_mutex(SemaphoreHandle_t mutex);
 
 #endif // ECG_H
 
