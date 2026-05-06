@@ -1,9 +1,16 @@
-/*
-Functions related to creating and controlling the LVGL graphical user interface.
-*/
+/**
+ * @file gui.c
+ * @brief LVGL graphical user interface creation and control.
+ *
+ * This file contains functions to initialize and manage the various
+ * screens (Boot, Main, ECG), status bars, and the sidebar menu using
+ * the LVGL graphics library. It also handles encoder input mappings
+ * and GUI state transitions.
+ */
 
 #include "../gui/gui.h"
 #include "../lcd/lcd.h"
+
 
 #include "encoder.h"
 #include "esp_log.h"
@@ -15,6 +22,8 @@ Functions related to creating and controlling the LVGL graphical user interface.
 #define WAVEFORM_CHART_NUM_POINTS 125 // (for decim=128) //500 (for decim=32)
 
 #define _TESTING 1
+
+LV_IMG_DECLARE(SetupImg);
 
 typedef enum {
     OFFSET = 0,
@@ -53,6 +62,9 @@ static chart_tool_t chart_tool_state = OFFSET;      // = 0
 
 static const char *TAG = "gui.c";
 
+/**
+ * @brief Creates the base/root screen for the LVGL UI.
+ */
 void create_root_screen(void) {
     if (_TESTING) ESP_LOGI(TAG, "In create_root_screen()");
     root_scr = lv_obj_create(NULL);
@@ -68,9 +80,11 @@ void create_root_screen(void) {
     if (_TESTING) ESP_LOGI(TAG, "Returning from create_root_screen()");
 }
 
-/*
-Returns the root screen which houses the screen container and sidebar container.
-*/
+/**
+ * @brief Retrieves the root screen which houses the main containers.
+ * 
+ * @return lv_obj_t* Pointer to the root screen object.
+ */
 lv_obj_t *get_root_screen(void) {
     if (!root_scr) {
         create_root_screen();
@@ -78,6 +92,11 @@ lv_obj_t *get_root_screen(void) {
     return root_scr;
 }
 
+/**
+ * @brief Updates the system state text displayed in the status bar.
+ * 
+ * @param new_state_data Pointer to the string representing the new state.
+ */
 void update_sys_state_text(void *new_state_data) {
     char *new_state_text = (char *)new_state_data;
 
@@ -90,6 +109,11 @@ void update_sys_state_text(void *new_state_data) {
     }
 }
 
+/**
+ * @brief Updates the tool text displayed in the status bar.
+ * 
+ * @param new_tool_text String containing the new tool state (e.g., Scale, Offset).
+ */
 void update_tool_text(const char *new_tool_text) {
     ESP_LOGI(TAG, "In update_tool_text()");
     if (tool_label) {
@@ -100,6 +124,9 @@ void update_tool_text(const char *new_tool_text) {
     }
 }
 
+/**
+ * @brief Creates the bottom status bar containing state and tool labels.
+ */
 static void create_status_bar() {
     if (_TESTING) ESP_LOGI(TAG, "In create_status_bar()");
     if (!root_scr) {
@@ -133,6 +160,12 @@ static void create_status_bar() {
     if (_TESTING) ESP_LOGI(TAG, "Returning from create_status_bar()");
 }
 
+/**
+ * @brief Updates the classification and confidence labels in the data bar.
+ * 
+ * @param new_classification_text String representing the ML class prediction.
+ * @param new_confidence_level Float representing the confidence probability (0.0 to 1.0).
+ */
 void update_data_bar_text(const char *new_classification_text, float new_confidence_level) {
     ESP_LOGI(TAG, "In update_data_bar_text()");
     // Define the text buffer
@@ -148,6 +181,9 @@ void update_data_bar_text(const char *new_classification_text, float new_confide
     }
 }
 
+/**
+ * @brief Creates the top data bar displaying ML prediction results.
+ */
 static void create_data_bar() {
     if (_TESTING) ESP_LOGI(TAG, "In create_data_bar()");
     if (!root_scr) {
@@ -180,6 +216,9 @@ static void create_data_bar() {
     if (_TESTING) ESP_LOGI(TAG, "Returning from create_data_bar()");
 }
 
+/**
+ * @brief Creates the main central container for holding sub-screens.
+ */
 static void create_scr_container(void) {
     if (!scr_container) {
         if (!root_scr) {
@@ -197,10 +236,14 @@ static void create_scr_container(void) {
     }
 }
 
-/*
-Callback function for an encoder-based LVGL input device.
-Called from init_sidebar_input().
-*/
+/**
+ * @brief Callback function for the encoder-based LVGL input device.
+ * 
+ * @note Called continuously by LVGL to poll the encoder state.
+ * 
+ * @param indev Pointer to the LVGL input device.
+ * @param data Pointer to the input device data structure to populate.
+ */
 static void enc_read(lv_indev_t *indev, lv_indev_data_t *data) {
     if (xQueueReceive(forwarded_enc_queue, &enc_event, 0) != pdFALSE) {
         // Reset display timeout due to recorded user input
@@ -248,9 +291,10 @@ static void enc_read(lv_indev_t *indev, lv_indev_data_t *data) {
     }
 }
 
-/*
-Called from create_sidebar() to initialize the encoder as an LVGL input device and create the LVGL group.
-*/
+/**
+ * @brief Initializes the encoder as an LVGL input device and creates the UI group.
+ * @note Called from create_sidebar().
+ */
 static void init_sidebar_input(void) {
     if (!enc_dev) {
         enc_dev = lv_indev_create();
@@ -265,9 +309,11 @@ static void init_sidebar_input(void) {
     lv_indev_set_group(enc_dev, sidebar_group);
 }
 
-/*
-Called from create_sidebar_item() to initialize default and focused item styles. Sets styles_initialized flag to true.
-*/
+/**
+ * @brief Initializes default and focused item styles for the sidebar.
+ * 
+ * @note Sets the styles_initialized flag to true to prevent redundant calls.
+ */
 static void init_item_styles(void) {
     if (_TESTING) ESP_LOGI(TAG, "In init_item_styles()");
     if (styles_initialized) return;
@@ -286,6 +332,11 @@ static void init_item_styles(void) {
     styles_initialized = true;
 }
 
+/**
+ * @brief Toggles the visibility of the sidebar and resizes main containers.
+ * 
+ * @param show_sidebar True to show the sidebar, false to hide it.
+ */
 static void update_sidebar_state(bool show_sidebar) {
     // Update main container size
     if (show_sidebar) {
@@ -303,11 +354,14 @@ static void update_sidebar_state(bool show_sidebar) {
     sidebar_shown = show_sidebar;
 }
 
-/*
-A callback function that calls load_system_state() as defined in lcd.c to update the gui_task with the desired GUI state change.
-Called from create_sidebar_item().
-If encoder button is pressed but the sidebar is not being shown, this function will show the sidebar and not cause any state change.
-*/
+/**
+ * @brief LVGL event callback for sidebar item clicks.
+ * 
+ * @details Calls load_system_state() to update the GUI task with the desired state.
+ *          If the sidebar is hidden when clicked, it will show the sidebar instead.
+ * 
+ * @param e Pointer to the LVGL event.
+ */
 static void sidebar_item_event_cb(lv_event_t *e) {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
 
@@ -324,9 +378,12 @@ static void sidebar_item_event_cb(lv_event_t *e) {
     }
 }
 
-/*
-Reusable function for creating each sidebar item with button-like styling.
-*/
+/**
+ * @brief Reusable function for creating a sidebar item with button-like styling.
+ * 
+ * @param label_text The text displayed on the button.
+ * @param gui_state The target system state to transition to when clicked.
+ */
 void create_sidebar_item(const char *label_text, system_state_t gui_state) {
     if (_TESTING) ESP_LOGI(TAG, "In create_sidebar_item()");
 
@@ -374,9 +431,9 @@ void create_sidebar_item(const char *label_text, system_state_t gui_state) {
 }
 
 
-/*
-Create LVGL objects that function as the main menu sidebar
-*/
+/**
+ * @brief Creates LVGL objects that function as the main menu sidebar.
+ */
 void create_sidebar(void) {
     if (_TESTING) ESP_LOGI(TAG, "In create_sidebar()");
 
@@ -435,6 +492,11 @@ void create_sidebar(void) {
     lv_obj_set_flag(sidebar, LV_OBJ_FLAG_HIDDEN, false);
 }
 
+/**
+ * @brief Helper function to set the current tool text based on chart state.
+ * 
+ * @param is_ECG_shown True if the ECG screen is currently active.
+ */
 static void set_tool_text(bool is_ECG_shown) {
     if (!is_ECG_shown) {
         update_tool_text("--    ");     // extra space to keep padding consistent
@@ -447,9 +509,9 @@ static void set_tool_text(bool is_ECG_shown) {
     }
 }
 
-// -------------------------
-// Boot Screen
-// -------------------------
+/**
+ * @brief Initializes the boot screen UI objects and progress bar.
+ */
 static void create_boot_screen() {
     if (_TESTING) ESP_LOGI(TAG, "In create_boot_screen()");   
     
@@ -469,9 +531,9 @@ static void create_boot_screen() {
     lv_obj_align(boot_bar, LV_ALIGN_CENTER, 0, 40);
 }
 
-/*
-Callback to exit the system from boot state and enter the nominal use state.
-*/
+/**
+ * @brief Callback to exit the system from boot state and enter the nominal use state.
+ */
 static void boot_bar_completed_cb() {
     // Replace boot screen with main root screen container
     lv_screen_load(root_scr);
@@ -479,9 +541,9 @@ static void boot_bar_completed_cb() {
     load_system_state(GUI_MAIN);
 }
 
-/*
-Increments the value of the boot bar and calls boot_bar_completed_cb when done.
-*/
+/**
+ * @brief Increments the value of the boot bar and triggers completion callback.
+ */
 static void start_boot_bar_animation() {
     if (_TESTING) ESP_LOGI(TAG, "In show_boot_bar_animation()");
 
@@ -495,9 +557,9 @@ static void start_boot_bar_animation() {
     lv_anim_start(&a);
 }
 
-/*
-Turns on LCD backlight, loads the boot screen object, and starts the boot bar animation.
-*/
+/**
+ * @brief Turns on LCD backlight, loads the boot screen, and starts animation.
+ */
 void show_boot_screen() {
     if (_TESTING) ESP_LOGI(TAG, "In show_boot_screen()");   
     
@@ -530,18 +592,33 @@ static void create_main_screen(void) {
     lv_obj_set_size(main_scr, lv_pct(100), lv_pct(100));
     lv_obj_align(main_scr, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_radius(main_scr, 0, 0);
+    
+    // Disable scrolling on this screen brought about by adding SetupImg
+    lv_obj_clear_flag(main_scr, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flag(main_scr, LV_OBJ_FLAG_SCROLLABLE, false);    
 
-    lv_obj_t *text = lv_label_create(main_scr);
-    lv_label_set_text(text, "Welcome to PulsePioneer\n\n<Insert Setup Instructions Here>");
-    lv_obj_set_style_text_color(text, lv_color_black(), 0);
-    lv_obj_set_style_text_align(text, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(text, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_t * img = lv_img_create(main_scr);
+    // Set the image source to the C array
+    lv_img_set_src(img, &SetupImg);
+    // Position it in the center
+    lv_obj_align(img, LV_ALIGN_CENTER, 0, 0);
+    // Down-scale the image by zooming out
+    lv_img_set_zoom(img, 128);
+
+    // lv_obj_t *text = lv_label_create(main_scr);
+    // lv_label_set_text(text, "Welcome to Pulse Pioneer");    // TODO: add setup instructions
+    // lv_obj_set_style_text_color(text, lv_color_black(), 0);
+    // lv_obj_set_style_text_align(text, LV_TEXT_ALIGN_CENTER, 0);
+    // lv_obj_align(text, LV_ALIGN_CENTER, 0, 0);
 
     lv_obj_add_flag(main_scr, LV_OBJ_FLAG_HIDDEN);
 
     if(_TESTING) ESP_LOGI(TAG, "Returning from create_main_screen()");
 }
 
+/**
+ * @brief Initializes the LVGL objects for the main/home screen.
+ */
 void show_main_screen(void) {
     if (_TESTING) ESP_LOGI(TAG, "In show_main_menu()");
 
@@ -570,6 +647,9 @@ lv_waveform_t *get_waveform_ptr() {
     return waveform_ptr;
 }
 
+/**
+ * @brief Adds data series channels to the ECG waveform chart.
+ */
 static void add_waveform_plot() {
     if(_TESTING) ESP_LOGI(TAG, "In add_waveform_plot()");
     if (!waveform_ptr) {
@@ -588,10 +668,18 @@ static void add_waveform_plot() {
     }
 }
 
+/**
+ * @brief Retrieves the ECG screen calibration status label.
+ * 
+ * @return lv_obj_t* Pointer to the LVGL label object.
+ */
 lv_obj_t *get_ecg_scr_label() {
     return ecg_scr_label;
 }
 
+/**
+ * @brief Initializes the boot screen UI objects and progress bar.
+ */
 static void create_ECG_screen(uint8_t num_charts) {
     if (_TESTING) ESP_LOGI(TAG, "In create_ECG_screen()");
     static lv_waveform_t waveform = {};
@@ -627,6 +715,10 @@ static void create_ECG_screen(uint8_t num_charts) {
     lv_obj_set_style_width(waveform.chart, 0, LV_PART_INDICATOR);
     lv_obj_set_style_line_width(waveform.chart, 3, LV_PART_ITEMS);
     
+    // Set update mode to CIRCULAR to prevent full-screen redraws
+    // Reduces the rendering and SPI DMA delay from ~100ms down to ~2ms
+    lv_chart_set_update_mode(waveform.chart, LV_CHART_UPDATE_MODE_CIRCULAR);
+    
     // Pack the constructed waveform into the global pointer
     waveform_ptr = &waveform;
 
@@ -644,6 +736,9 @@ static void create_ECG_screen(uint8_t num_charts) {
     lv_obj_add_flag(ecg_scr, LV_OBJ_FLAG_HIDDEN);
 }
 
+/**
+ * @brief Displays the main/home screen and updates the tool status.
+ */
 void show_ECG_screen(void) {
     if (_TESTING) ESP_LOGI(TAG, "In show_ECG_screen()");
     if (!ecg_scr) {
@@ -659,9 +754,9 @@ void show_ECG_screen(void) {
     if (_TESTING) ESP_LOGI(TAG, "ecg_stream_task() resumed from show_ECG_screen().");
 }
 
-/*
-Container function for initializing all main GUI screens using LVGL.
-*/
+/**
+ * @brief Orchestrates the initialization of all main GUI screens using LVGL.
+ */
 void create_LVGL_screens() {
     if (_TESTING) ESP_LOGI(TAG, "In create_LVGL_screens()");
     // Make system data bar

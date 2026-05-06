@@ -1,3 +1,13 @@
+/**
+ * @file ecg.c
+ * @brief ADS1293 ECG sensor SPI communication and data streaming.
+ *
+ * This file contains functions and FreeRTOS tasks to initialize the
+ * ADS1293 ECG front-end, read sample data over SPI, and push the
+ * samples to FreeRTOS queues for both GUI rendering and ML inference.
+ */
+#include <stdio.h>
+
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "esp_timer.h"
@@ -18,49 +28,69 @@
 
 static const char *TAG = "ecg.c";
 
-// ECG SPI device handles
+/** @brief SPI host device used for ECG communication */
 spi_host_device_t ecg_host_device;
+/** @brief SPI device handle for the ADS1293 */
 spi_device_handle_t ecg_handle;
 
-// Queue for all ECG samples to be processed (base type of ecg_sample_t)
+/** @brief Queue for all ECG samples to be processed (base type of ecg_sample_t) */
 QueueHandle_t ecg_sample_queue = NULL;
-// Queue to forward ECG data to model task (base type of int32_t)
+/** @brief Queue to forward ECG data to model task (base type of int32_t) */
 QueueHandle_t ecg_data_model_input_queue = NULL;
-// Queue to pass the ALAB pin state from the ISR to the handler task
+/** @brief Queue to pass the ALAB pin state from the ISR to the handler task */
 QueueHandle_t alarm_event_queue = NULL;
+/** @brief Task handle for the alarm handler */
 TaskHandle_t alarm_task_handle = NULL;
 
-// SPI bus mutex
-// Allows both ecg_streaming_task and alarm_handler_task to share the spi bus
+/**
+ * @brief SPI bus mutex.
+ * @details Allows both ecg_streaming_task and alarm_handler_task to safely share the SPI bus.
+ */
 SemaphoreHandle_t ecg_spi_mutex = NULL;
 
-
+/** @brief GPIO pin for ECG SPI Clock */
 const gpio_num_t ECG_SCLK_PIN = 9;
+/** @brief GPIO pin for ECG SPI MOSI (Data In to ADS1293) */
 const gpio_num_t ECG_SDI_PIN = 10;
+/** @brief GPIO pin for ECG SPI MISO (Data Out from ADS1293) */
 const gpio_num_t ECG_SDO_PIN = 11;
+/** @brief GPIO pin for ECG SPI Chip Select */
 const gpio_num_t ECG_CSB_PIN = 12;
+/** @brief GPIO pin for ECG Hardware Alarm (Active Low) */
 const gpio_num_t ECG_ALAB_PIN = 13;
+/** @brief GPIO pin for ECG Data Ready (Active Low) */
 const gpio_num_t ECG_DRDB_PIN = 14;
 
 static bool full_queue_flag = false;
 static bool error_flag = false;
 static bool is_first_normal_pass = true;
 
-// Debug setting
+/** @brief Internal debugging flag */
 #define _TESTING 1
 
-#define NUM_BYTES_ECG_SAMPLE 8 // DO NOT MODIFY; dummy (1) + DATA_STATUS (1) + CH1(3) + CH2(3)
-#define ECG_CLOCK_FREQUENCY 4000000 // do not modify
+/** @brief Total bytes per ECG sample transaction: dummy (1) + DATA_STATUS (1) + CH1(3) + CH2(3) */
+#define NUM_BYTES_ECG_SAMPLE 8
+/** @brief SPI clock frequency for the ADS1293 */
+#define ECG_CLOCK_FREQUENCY 4000000
 
 #define ECG_QUEUE_SIZE 2000//256
 #define ECG_QUEUE_ITEM_SIZE sizeof(ecg_sample_t)
 
-// Static memory allocation for the ML input queue to avoid runtime heap fragmentation
-#define MODEL_QUEUE_SIZE 2000 //2048
+/** @brief Static memory allocation size for the ML input queue to avoid runtime heap fragmentation */
+#define MODEL_QUEUE_SIZE 2000
+/** @brief Static storage buffer for the model input queue */
 static uint8_t model_queue_storage[MODEL_QUEUE_SIZE * sizeof(int32_t)];
+/** @brief Static FreeRTOS queue structure for the model input queue */
 static StaticQueue_t model_queue_struct;
 
-
+/**
+ * @brief Sets the color and brightness of the onboard RGB LED.
+ * 
+ * @param color_r Red value (0-255).
+ * @param color_g Green value (0-255).
+ * @param color_b Blue value (0-255).
+ * @param brightness Scaling factor for overall brightness (0-255).
+ */
 void show_rgb_led(uint32_t color_r, uint32_t color_g, uint32_t color_b, uint32_t brightness) {
     // if (_TESTING) ESP_LOGI(TAG, "In show_rgb_led()");
     if (board_led_handle == NULL || rgb_led_mutex == NULL) return;
@@ -90,6 +120,12 @@ void show_rgb_led(uint32_t color_r, uint32_t color_g, uint32_t color_b, uint32_t
     }
 }
 
+/**
+ * @brief Writes a single byte of data to a specific ADS1293 register over SPI.
+ * 
+ * @param addr The 7-bit register address.
+ * @param data The 8-bit data value to write.
+ */
 void write_ecg_data(uint8_t addr, uint8_t data) {
     if (!INCLUDE_ECG) {
         return;
@@ -114,6 +150,12 @@ void write_ecg_data(uint8_t addr, uint8_t data) {
     // }
 }
 
+/**
+ * @brief Reads a specific register from the ADS1293 over SPI (primarily for debugging).
+ * 
+ * @param reg_address The 7-bit register address.
+ * @param reg_i Expected index in the read buffer (for parsing).
+ */
 void read_register(uint8_t reg_address, uint8_t reg_i) {
     uint8_t tx_buffer_data[2] = {(0x80 | reg_address), 0x00};
     uint8_t rx_buffer_data[3] = {0};
@@ -151,8 +193,14 @@ void read_register(uint8_t reg_address, uint8_t reg_i) {
     }
 }
 
+/** @brief String representations of ADS1293 alarm flags */
 const char* alarm_types[] = {"CMOR", "RLDRAIL", "BATLOW", "LEADOFF", "CH1ERR", "CH2ERR", "CH3ERR", "SYNCEDGEERR"};
 
+/**
+ * @brief Reads the ALARM register from the ADS1293 and clears the latch.
+ * 
+ * @return uint8_t The 8-bit alarm status value.
+ */
 uint8_t process_alarms() {
     uint8_t rx_buffer_data[NUM_BYTES_ECG_SAMPLE] = {0};
     uint8_t tx_buffer_data[NUM_BYTES_ECG_SAMPLE] = {(0b10000000 | 0x19), 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
@@ -182,6 +230,11 @@ uint8_t process_alarms() {
     return alarm;
 }
 
+/**
+ * @brief Parses and logs specific hardware alarm flags based on the 8-bit alarm value.
+ * 
+ * @param alarm The 8-bit alarm status read from the sensor.
+ */
 void print_alarm_errors(uint8_t alarm) {
 
     if (alarm & (0x1 << 0)) ESP_LOGW(TAG, "CMOR");
@@ -296,6 +349,9 @@ void print_alarm_errors(uint8_t alarm) {
 //     }
 // }
 
+/**
+ * @brief Initializes the SPI bus and configures the ADS1293 for a 3-lead ECG.
+ */
 void init_ecg() {
     if (!INCLUDE_ECG) {
         return;
@@ -399,6 +455,15 @@ void init_ecg() {
     }
 }
 
+/**
+ * @brief Reads a single ECG sample group (status + channels) from the ADS1293 via SPI.
+ * 
+ * @details Also handles the 24-bit to 32-bit sign extension for the channels.
+ * 
+ * @param status Pointer to store the returned 8-bit status.
+ * @param ch1 Pointer to store the 32-bit extended channel 1 reading.
+ * @param ch2 Pointer to store the 32-bit extended channel 2 reading.
+ */
 void ecg_read_sample(uint8_t *status, int32_t *ch1, int32_t *ch2) {
     if (!INCLUDE_ECG) {
         return;
@@ -442,12 +507,13 @@ void ecg_read_sample(uint8_t *status, int32_t *ch1, int32_t *ch2) {
 }
 
 
-/*
-Checks if the ADS1293 has data ready to send to the ESP.
-Reads the available sample.
-If an alarm is present, immediately return from this function without adding data to the queue.
-Else, add the data to the queue. If the queue is full, then set the global full_queue_flag to true.
-*/
+/**
+ * @brief Polls the DRDB pin and streams available ECG data into system queues.
+ * 
+ * @details Checks if the ADS1293 has data ready. If so, reads the sample, 
+ *          accumulates/decimates it, and pushes it to both the GUI rendering 
+ *          queue and the ML inference queue. Handles queue overflow gracefully.
+ */
 bool is_init_val = true;
 void stream_ecg_data() {
     if (!INCLUDE_ECG) {
@@ -512,7 +578,10 @@ void stream_ecg_data() {
                     return;     // skip adding data to the model output queue
                 }
 
+                // if (_TESTING) printf("%"PRIu32", %"PRId32"\n", sample.timestamp_us, sample.ch1);
+
                 if (is_plot_calibrated()) {
+                    // For init printing
                     if (is_init_val) {
                         ESP_LOGI(TAG, "ECG data is now being forwarded to ecg_data_model_input_queue");
                         is_init_val = false;
@@ -520,7 +589,7 @@ void stream_ecg_data() {
                     if (!uxQueueSpacesAvailable(ecg_data_model_input_queue)) {
                         int32_t dummy;
                         // Log the failure
-                        ESP_LOGE(TAG, "ML Queue Overflow! Window compromised. Flushing queue.");
+                        ESP_LOGE(TAG, "ML Queue Overflow! Flushing queue.");
                         
                         // Empty the queue completely to invalidate the corrupted window
                         xQueueReceive(ecg_data_model_input_queue, &dummy, 0);
@@ -530,26 +599,40 @@ void stream_ecg_data() {
                     xQueueSend(ecg_data_model_input_queue, &sample.ch1, 0);
                 }
             }
-        // } else {
-        //     ESP_LOGW(TAG, "Sample data status == 0");
-        // }
     }
 }
 
-// ------------------------
-// Main ECG Streaming Task
-// ------------------------
+/**
+ * @brief FreeRTOS task responsible for continuous ECG data streaming.
+ * 
+ * @param pvParameters Task parameters (unused).
+ */
 void ecg_stream_task(void *pvParameters) {
     if (_TESTING) ESP_LOGI(TAG, "Started ecg_stream_task()");
 
     // Create data queue in internal SRAM to avoid PSRAM bus contention with ML inference
     ecg_sample_queue = xQueueCreate(ECG_QUEUE_SIZE, ECG_QUEUE_ITEM_SIZE);
+    // // Allocate queue memory in PSRAM to save ~40KB of internal DRAM
+    // uint8_t *ecg_queue_storage = (uint8_t *)heap_caps_malloc(ECG_QUEUE_SIZE * ECG_QUEUE_ITEM_SIZE, MALLOC_CAP_SPIRAM);
+    // StaticQueue_t *ecg_queue_struct = (StaticQueue_t *)heap_caps_malloc(sizeof(StaticQueue_t), MALLOC_CAP_INTERNAL);
+    // if (ecg_queue_storage && ecg_queue_struct) {
+    //     ecg_sample_queue = xQueueCreateStatic(ECG_QUEUE_SIZE, ECG_QUEUE_ITEM_SIZE, ecg_queue_storage, ecg_queue_struct);
+    // }
+
     if (!ecg_sample_queue) {
         ESP_LOGE(TAG, "ECG sample queue could not be created. Deleting ecg_stream_task...");
         vTaskDelete(NULL);
     }
+
     // Create data queue for forwarding data to model inference task
     ecg_data_model_input_queue = xQueueCreateStatic(MODEL_QUEUE_SIZE, sizeof(int32_t), model_queue_storage, &model_queue_struct);
+    // Allocate ML data queue in PSRAM to save ~8KB of BSS/DRAM
+    // uint8_t *model_q_storage = (uint8_t *)heap_caps_malloc(MODEL_QUEUE_SIZE * sizeof(int32_t), MALLOC_CAP_SPIRAM);
+    // StaticQueue_t *model_q_struct = (StaticQueue_t *)heap_caps_malloc(sizeof(StaticQueue_t), MALLOC_CAP_INTERNAL);
+    // if (model_q_storage && model_q_struct) {
+    //     ecg_data_model_input_queue = xQueueCreateStatic(MODEL_QUEUE_SIZE, sizeof(int32_t), model_q_storage, model_q_struct);
+    // }
+
     if (ecg_data_model_input_queue == NULL) {
         ESP_LOGE(TAG, "ecg_data_model_queue could not be created.");
     }

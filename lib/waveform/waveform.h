@@ -28,8 +28,6 @@ void update_chart_offset(lv_waveform_t *waveform, int32_t enc_diff);
 
 bool is_plot_calibrated(void);
 
-bool test_waveform_plot(lv_waveform_t *waveform);
-
 #endif //waveform.h
 
 #ifdef __cplusplus

@@ -1,3 +1,11 @@
+/**
+ * @file main.c
+ * @brief Main application entry point for the PulsePioneer system.
+ *
+ * This file orchestrates the initialization of hardware peripherals,
+ * TensorFlow Lite Micro, and launches the core FreeRTOS tasks that run 
+ * the ECG streaming, display rendering (LVGL), and ML inference.
+ */
 #include <stdio.h>
 #include <nvs.h>
 #include "driver/gpio.h"
@@ -18,24 +26,37 @@
 
 static const char *TAG = "main.c";
 
+/** @brief GPIO pin for the onboard RGB LED */
 #define RGB_LED_PIN 38
+/** @brief Default brightness for the RGB LED (0-255) */
 #define RGB_LED_BRIGHTNESS 25
 
+/** @brief Flag to enable detailed debug logging */
 #define _TESTING 1
 
+/** @brief Handle for the ECG streaming task */
 TaskHandle_t ecg_stream_task_handle = NULL;
+/** @brief Handle for the LVGL display task */
 TaskHandle_t lvgl_task_handle = NULL;
+/** @brief Handle for the user input task */
 TaskHandle_t input_task_handle = NULL;
+/** @brief Handle for the GUI rendering task */
 TaskHandle_t gui_task_handle = NULL;
+/** @brief Handle for the TFLM inference task */
 TaskHandle_t inference_task_handle = NULL;
 
+/** @brief Mutex to protect access to the RGB LED */
 SemaphoreHandle_t rgb_led_mutex = NULL;
+/** @brief Handle for the RMT-based RGB LED strip */
 led_strip_handle_t board_led_handle = NULL;
 
 
-/*
-Setup all GPIO pins on the ESP32-S3 DevKitC-1.
-*/
+/**
+ * Setup GPIO pins on the ESP32-S3 DevKitC-1.
+ * 
+ * Initializes outputs, regular inputs, interrupt-enabled inputs, and RTC inputs
+ */
+
 void init_gpio() {
     if (_TESTING) ESP_LOGI(TAG, "In init_gpio()");
     gpio_config_t io_conf = {};
@@ -57,7 +78,7 @@ void init_gpio() {
     io_conf.intr_type = GPIO_INTR_DISABLE;
     ESP_ERROR_CHECK(gpio_config(&io_conf));
     
-    // Configure input pins
+    // Configure regular input pins
     io_conf.pin_bit_mask = ((1ULL << LCD_SDO_PIN) |
                             (1ULL << ECG_SDO_PIN) |
                             // (1ULL << ECG_ALAB_PIN) |
@@ -68,6 +89,7 @@ void init_gpio() {
     io_conf.intr_type = GPIO_INTR_DISABLE;
     ESP_ERROR_CHECK(gpio_config(&io_conf));
 
+    // Configure interrupt-enabled inputs
     io_conf.pin_bit_mask = (1ULL << ECG_ALAB_PIN);
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
@@ -75,6 +97,7 @@ void init_gpio() {
     io_conf.intr_type = GPIO_INTR_ANYEDGE;
     ESP_ERROR_CHECK(gpio_config(&io_conf));
 
+    // Configure RTC inputs
     ESP_ERROR_CHECK(rtc_gpio_init(POWER_BTN_PIN));
     ESP_ERROR_CHECK(rtc_gpio_set_direction(POWER_BTN_PIN, RTC_GPIO_MODE_INPUT_ONLY));
     // Ensure pin will not droop low
@@ -82,7 +105,11 @@ void init_gpio() {
     ESP_ERROR_CHECK(rtc_gpio_pulldown_dis(POWER_BTN_PIN));
 }
 
-// static led_strip_handle_t board_led_handle;
+/**
+ * @brief Initialize ESP32-S3 DevKitC-1 onboard RGB LED as a new RMT device.
+ *
+ * @note Sets up the WS2812 LED model parameters and initializes the shared mutex.
+ */
 void init_rgb_indicator(void) {
     if (_TESTING) ESP_LOGI(TAG, "In init_rgb_indicator()");
 
@@ -105,11 +132,14 @@ void init_rgb_indicator(void) {
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &strip_rmt_config, &board_led_handle));
 }
 
-/*
-Initializes several critical subsystems, such as GPIO, on-board RGB indicator, ADS1293, and LCD.
-Will show yellow RGB LED after GPIO and RGB init. Stays yellow while in deep-sleep.
-Will show green RGB LED after woken up from deep sleep, successful ADS1293 init, and successful LCD init.
-*/
+/**
+ * @brief Initializes critical subsystems before starting system tasks.
+ * 
+ * @note Initializes GPIO, on-board RGB indicator, ADS1293 (ECG), and the LCD.
+ *       - Shows yellow RGB LED after GPIO and RGB init (stays yellow while in deep-sleep).
+ *       - Shows green RGB LED after waking up, successful ADS1293 init, and LCD init.
+ *       - Sets up the TensorFlow Lite Micro (TFLM) memory arena.
+ */
 void start_system_boot() {
     if (_TESTING) ESP_LOGI(TAG, "In start_system_boot()");
 
@@ -135,8 +165,16 @@ void start_system_boot() {
     if (INCLUDE_ECG) init_ecg();
 
     show_rgb_led(0, 255, 0, RGB_LED_BRIGHTNESS);        // green
+
+    return;
 }
 
+/**
+ * @brief Application entry point.
+ * 
+ * @details Boots the system, creates and pins all necessary FreeRTOS tasks 
+ *          (inference, UI, ECG stream) to their respective cores, and idles indefinitely.
+ */
 void app_main() {
     if (_TESTING) ESP_LOGI(TAG, "In app_main()");
 
@@ -148,7 +186,7 @@ void app_main() {
     //              Use high uxPriority values for critical tasks
     if (INCLUDE_LCD) {
         // Create the inference task(implemented in tflm_wrapper.cc) with priority=1 on core 0
-        xTaskCreatePinnedToCore(inference_task, "inference_task", 8196, NULL, 1, &inference_task_handle, 0);
+        xTaskCreatePinnedToCore(inference_task, "inference_task", 4096, NULL, 1, &inference_task_handle, 0);
         // Create the LVGL task (implemented in lcd.c) with priority=3 on core 1
         xTaskCreatePinnedToCore(lvgl_task, "lvgl_task", 8192, NULL, 3, &lvgl_task_handle, 1);
         // Create the user input task (implemented in lcd.c) with priority=10 on core 1
@@ -167,6 +205,8 @@ void app_main() {
     } 
 
     vTaskDelay(pdMS_TO_TICKS(1000));
+
+    // Print the leftover stack height for each task
     if (INCLUDE_ECG && ecg_stream_task_handle) ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark2(ecg_stream_task_handle) returned %ld", uxTaskGetStackHighWaterMark2(ecg_stream_task_handle));
     if (INCLUDE_LCD && lvgl_task_handle) ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark2(lvgl_task_handle) returned %ld", uxTaskGetStackHighWaterMark2(lvgl_task_handle));
     if (INCLUDE_LCD && input_task_handle) ESP_LOGI(TAG, "uxTaskGetStackHighWaterMark2(input_task_handle) returned %ld", uxTaskGetStackHighWaterMark2(input_task_handle));

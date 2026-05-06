@@ -29,8 +29,7 @@ typedef enum {
     GUI_IDLE = 0,
     GUI_BOOT = 1,
     GUI_MAIN = 2,
-    GUI_ECG = 3,
-    GUI_DEMO = 10
+    GUI_ECG = 3
 } system_state_t;
 
 extern QueueHandle_t enc_queue;
@@ -56,7 +55,5 @@ void load_system_state(system_state_t state);
 void gui_task(void *pvParameters);
 
 lv_obj_t *get_ecg_scr_label(void);
-
-// void boot_bar_completed_cb(void);
 
 #endif // LCD_H

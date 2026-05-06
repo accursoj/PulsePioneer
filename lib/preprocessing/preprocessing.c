@@ -1,3 +1,11 @@
+/**
+ * @file preprocessing.c
+ * @brief ECG signal preprocessing pipeline for TensorFlow Lite Micro.
+ *
+ * This file contains digital signal processing (DSP) utilities such as
+ * resampling, bandpass filtering (Biquad IIR), mean-centering, and
+ * z-score normalization to prepare raw ECG data for ML inference.
+ */
 #define TF_LITE_STATIC_MEMORY
 
 #include <stdint.h>
@@ -18,11 +26,11 @@ static const char *TAG = "preprocessing.c";
  */
 
 /**
- * @brief Estimate sampling frequency from timestamped samples.
+ * @brief Estimates the sampling frequency from timestamped samples.
  *
- * @param samples Array of ECG samples with timestamps
- * @param len Number of samples
- * @return Estimated sampling frequency (Hz)
+ * @param samples Array of ECG samples with timestamps.
+ * @param len Number of samples in the array.
+ * @return float Estimated sampling frequency in Hz.
  */
 static float compute_fs(ecg_sample_t *samples, int len) {
     if (len < 2) return TARGET_FS;
@@ -35,12 +43,12 @@ static float compute_fs(ecg_sample_t *samples, int len) {
 }
 
 /**
- * @brief Linearly resample a signal to a fixed number of points.
+ * @brief Linearly resamples a signal to a fixed number of points.
  *
- * @param in Input signal
- * @param in_len Input length
- * @param out Output buffer
- * @param out_len Desired output length
+ * @param in Pointer to the input signal array.
+ * @param in_len Number of elements in the input array.
+ * @param out Pointer to the output buffer for the resampled signal.
+ * @param out_len Desired number of elements in the output array.
  */
 static void resample_signal(float *in, int in_len, float *out, int out_len) {
     float scale = (float)(in_len - 1) / (out_len - 1);
@@ -58,6 +66,9 @@ static void resample_signal(float *in, int in_len, float *out, int out_len) {
 }
 
 #define NUM_STAGES 3
+/**
+ * @brief Structure representing a Direct Form 1 Biquad IIR filter stage.
+ */
 typedef struct {
     float b0, b1, b2;
     float a1, a2;
@@ -65,16 +76,25 @@ typedef struct {
     float y1, y2; // previous outputs
 } Biquad;
 
-// Initialize biquad coefficients for each stage
-// These coefficients should be computed from Python scipy.signal.butter(..., output='sos')
-// Example SOS array for 0.5-40Hz bandpass at FS=250Hz (replace with exact values)
+/**
+ * @brief Array of biquad coefficients for each bandpass filter stage.
+ * @note These coefficients should be computed from Python scipy.signal.butter(..., output='sos').
+ */
 static Biquad filters[NUM_STAGES] = {
     // replace with output from scipy.signal.butter
     { 0.05616238f, 0.11232477f, 0.05616238f, -0.76366721f, 0.41479668f, 0,0,0,0 },
     { 1.0f, 0.0f, -1.0f, -1.28842101f, 0.29735293f, 0,0,0,0 },
     { 1.0f, -2.0f, 1.0f, -1.98750036f, 0.98765905f, 0,0,0,0 }
 };
-// Apply a single biquad to one sample
+
+/**
+ * @brief Applies a single biquad filter stage to one sample.
+ *
+ * @param bq Pointer to the Biquad filter state and coefficients.
+ * @param x Input sample value.
+ * @param stage_idx Index of the filter stage.
+ * @return float Filtered output sample.
+ */
 static float apply_biquad(Biquad* bq, float x, size_t stage_idx) {
     float y = bq->b0 * x + bq->b1 * bq->x1 + bq->b2 * bq->x2
                         - bq->a1 * bq->y1 - bq->a2 * bq->y2;
@@ -88,9 +108,13 @@ static float apply_biquad(Biquad* bq, float x, size_t stage_idx) {
     return y;
 }
 /**
- * @brief Apply bandpass IIR filter to a single sample.
+ * @brief Applies a cascaded bandpass IIR filter to a single sample.
  *
- * Maintains internal state across calls.
+ * @details Processes the sample through NUM_STAGES biquad filters.
+ *          Maintains internal state across calls.
+ * 
+ * @param x Input sample.
+ * @return float Filtered output sample.
  */
 static float bandpass_filter(float x) {
     float y = x;
@@ -101,7 +125,12 @@ static float bandpass_filter(float x) {
     ESP_LOGI(TAG, "Completed bandpass_filter");
 }
 
-// To be called once when a new ECG segment is ready to be processed
+/**
+ * @brief Resets the internal state (delay lines) of all biquad filters.
+ * 
+ * @note To be called once when a new ECG segment is ready to be processed
+ *       to prevent ringing from previous data segments.
+ */
 static void reset_bandpass_states(void) {
     for (size_t i = 0; i < NUM_STAGES; i++) {
         filters[i].x1 = filters[i].x2 = 0.0f;
@@ -110,10 +139,10 @@ static void reset_bandpass_states(void) {
 }
 
 /**
- * @brief Normalize signal to zero mean and unit variance.
+ * @brief Normalizes a signal to zero mean and unit variance (z-score normalization).
  *
- * @param buf Input/output buffer
- * @param len Number of samples
+ * @param buf Input/output buffer containing the signal to normalize.
+ * @param len Number of samples in the buffer.
  */
 static void normalize(float *buf, int len) {
     float mean = 0.0f;
@@ -141,12 +170,26 @@ static void normalize(float *buf, int len) {
  * ============================================================
  */
 
+/**
+ * @brief Computes the arithmetic mean of a signal array.
+ * 
+ * @param buf Pointer to the signal array.
+ * @param len Number of samples in the array.
+ * @return float The arithmetic mean.
+ */
 static float compute_mean(float *buf, int len){
     float sum = 0;
     for(int i=0;i<len;i++) sum += buf[i];
     return sum/len;
 }
 
+/**
+ * @brief Computes the standard deviation of a signal array.
+ * 
+ * @param buf Pointer to the signal array.
+ * @param len Number of samples in the array.
+ * @return float The standard deviation.
+ */
 static float compute_std(float *buf, int len){
     float mean = compute_mean(buf,len);
     float s = 0;
@@ -158,15 +201,22 @@ static float compute_std(float *buf, int len){
 }
 
 /**
- * @brief Convert raw ECG samples into model-ready input.
- *  1. Acquire samples from queue
- *  2. Estimate sampling frequency (not implemented)
- *  3. Apply bandpass filtering
- *  4. Resample to fixed length
- *  5. Normalize signal
- *  6. Load the TFLM input tensor
+ * @brief Converts raw ECG samples into a model-ready input tensor.
+ * 
+ * @details The pipeline performs the following steps:
+ *          1. Acquires samples from the raw input buffer.
+ *          2. (Optional) Estimates sampling frequency.
+ *          3. Resamples the data to a fixed length (MODEL_INPUT_SIZE).
+ *          4. Mean-centers the data to remove DC offset.
+ *          5. (Optional) Applies cascaded bandpass filtering.
+ *          6. Normalizes the signal to zero mean and unit variance.
  *
- * @return true upon success, false upon failure
+ * @param model_input_buffer Pointer to the final preprocessed output array.
+ * @param raw_samples Pointer to the raw incoming ECG samples.
+ * @param filtered Pointer to an intermediate buffer used during processing.
+ * @param num_received_samples Number of raw samples received.
+ * @return true Upon successful preprocessing.
+ * @return false Upon failure.
  */
 bool create_input_buffer(float *model_input_buffer, int32_t *raw_samples, float *filtered, int num_received_samples) {
     ESP_LOGI(TAG, "In create_input_buffer().");
@@ -198,7 +248,9 @@ bool create_input_buffer(float *model_input_buffer, int32_t *raw_samples, float 
     ESP_LOGI(TAG,"Last 15 resampled samples:");
     for(int i=MODEL_INPUT_SIZE-1;i>MODEL_INPUT_SIZE-17;i--) ESP_LOGI(TAG,"%f", model_input_buffer[i]);
 
-    // 2. MEAN-CENTER (Crucial step to prevent IIR step response)
+    // Mean-center the data
+    // Dev note: This is critical to prevent ringing caused by initial application of the Biquad
+    //  after the filter is reset.
     float baseline_mean = 0.0f;
     for (int i = 0; i < MODEL_INPUT_SIZE; i++) {
         baseline_mean += model_input_buffer[i];
@@ -211,19 +263,15 @@ bool create_input_buffer(float *model_input_buffer, int32_t *raw_samples, float 
     ESP_LOGI(TAG,"First 15 baselined samples:");
     for(int i=0;i<15;i++) ESP_LOGI(TAG,"%f", model_input_buffer[i]);
 
-    // For production:
-    // Cast and filter each sample
-    for (int i = 0; i < MODEL_INPUT_SIZE; i++) {    // was num_received_smaples TEST:
-    //     // Cast channel 1 from int32_t to float
-    //     // Apply bandpass filter
-    //     // filtered[i] = bandpass_filter((float)raw_samples[i].ch1);
-    //     // filtered[i] = bandpass_filter(filtered[i]);
-
-        // model_input_buffer[i] = bandpass_filter(model_input_buffer[i]);
-
-    //     // // Cast channel 1 from int32_t to float
-    //     // filtered[i] = (float)raw_samples[i].ch1;
-    }
+    // // For production:
+    // // Cast and filter each sample
+    // // Dev note: This filtering currently seems to break the code.
+    // //   It seemed to be a critical preprocessing component because it corresponds with the
+    // //   bandpass filter applied to the training data. Even with mean-centering, the biquad
+    // //   still creates undesired data swings.
+    // for (int i = 0; i < MODEL_INPUT_SIZE; i++) {
+    //     model_input_buffer[i] = bandpass_filter(model_input_buffer[i]);
+    // }
 
     // // For testing:
     // // Cast and filter each hardcoded sample
@@ -239,7 +287,7 @@ bool create_input_buffer(float *model_input_buffer, int32_t *raw_samples, float 
     ESP_LOGI(TAG,"Last 15 filtered samples:");
     for(int i=MODEL_INPUT_SIZE-1;i>MODEL_INPUT_SIZE-17;i--) ESP_LOGI(TAG,"%f", model_input_buffer[i]);
 
-    // Normalize signal (zero mean, unit variance)
+    // Normalize signal
     normalize(model_input_buffer, MODEL_INPUT_SIZE);
 
     ESP_LOGI(TAG,"First 15 normalized samples:");

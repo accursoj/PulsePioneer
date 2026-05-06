@@ -1,9 +1,26 @@
+/**
+ * @file models.cc
+ * @brief TensorFlow Lite Micro model array definition.
+ *
+ * This file contains the compiled/converted TensorFlow Lite model
+ * represented as a C-style unsigned char array. This array is
+ * loaded directly into the ESP32's flash memory and read by the
+ * TFLM interpreter during ML inference tasks.
+ */
 #include <cstdint>
 #include "esp_attr.h"
 
 #include "models.h"
-// The constant will be stored in flash by default
 
+/**
+ * @brief Flatbuffer representation of the AFib/VFib classification model.
+ *
+ * @details This array holds the quantized TensorFlow Lite model data.
+ *          The alignas(8) specifier ensures that the model is properly aligned
+ *          in memory, which is strictly required by the TFLM interpreter
+ *          to prevent misaligned memory access exceptions on ESP32/Xtensa.
+ *          By default, this constant is stored in the ESP32's flash memory.
+ */
 alignas(8) const unsigned char model_afib_vfib_25_tflite[] = {
 0x1c, 0x00, 0x00, 0x00, 0x54, 0x46, 0x4c, 0x33, 0x14, 0x00, 0x20, 0x00, 
 0x1c, 0x00, 0x18, 0x00, 0x14, 0x00, 0x10, 0x00, 0x0c, 0x00, 0x00, 0x00, 

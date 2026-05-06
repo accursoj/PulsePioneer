@@ -1,3 +1,12 @@
+/**
+ * @file lcd.c
+ * @brief LCD, LVGL, and hardware input management for PulsePioneer.
+ *
+ * This file initializes and manages the ST7796 display panel, LVGL UI 
+ * framework, rotary encoder, and system power management (sleep/wake).
+ * It defines the FreeRTOS tasks responsible for rendering the UI, 
+ * processing hardware inputs, and controlling the LCD backlight.
+ */
 #include "lcd.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
@@ -62,23 +71,29 @@ static esp_lcd_panel_io_handle_t io_handle = NULL;
 static TaskHandle_t lcd_timeout_handle = NULL;
 static gptimer_handle_t timer_handle = NULL;
 
-// QueueHandle_t model_output_queue = NULL;
-
 SemaphoreHandle_t xLVGLSemaphore = NULL;
 
 QueueHandle_t enc_queue = NULL;
 QueueHandle_t forwarded_enc_queue = NULL;
 rotary_encoder_t enc = {};
 
+typedef enum {
+    LVGL_CMD_SHOW_BOOT,
+    LVGL_CMD_SHOW_MAIN,
+    LVGL_CMD_SHOW_ECG
+} lvgl_cmd_t;
+static QueueHandle_t lvgl_cmd_queue = NULL;
+
 char system_state;
 
 // Debug setting
 #define _TESTING 1
 
-/*
-Sets the duty cycle value for the PWM signal used to control the brightness of the LCD backlight.
-E.g. 0 --> backlight off; 100 --> max brightness
-*/
+/**
+ * @brief Sets the duty cycle value for the LCD backlight PWM signal.
+ * 
+ * @param p Duty cycle percentage (0-100). 0 is off, 100 is max brightness.
+ */
 void set_led_pwm(uint8_t p) {
     if (p > 100) {
         ESP_LOGE(TAG, "Duty cycle parameter exceeded 100%%");
@@ -91,6 +106,15 @@ void set_led_pwm(uint8_t p) {
 }
 
 static bool display_dimmed = false;
+
+/**
+ * @brief Hardware timer callback for LCD auto-timeout.
+ * 
+ * @param timer Timer handle.
+ * @param edata Event data.
+ * @param user_data User context data.
+ * @return true if a high priority task has been awoken, false otherwise.
+ */
 static bool IRAM_ATTR lcd_timeout_callback(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_data) {
     BaseType_t high_task_awoken = pdFALSE;
     vTaskNotifyGiveFromISR(lcd_timeout_handle, &high_task_awoken);
@@ -98,6 +122,9 @@ static bool IRAM_ATTR lcd_timeout_callback(gptimer_handle_t timer, const gptimer
     return high_task_awoken == pdTRUE;
 }
 
+/**
+ * @brief FreeRTOS task handling the LCD dimming upon timeout.
+ */
 static void lcd_timeout_task() {
     if (_TESTING) ESP_LOGI(TAG, "Started lcd_timeout_task()");
     for (;;) {   
@@ -114,6 +141,9 @@ static void lcd_timeout_task() {
     if (_TESTING) ESP_LOGW(TAG, "Ended lcd_timeout_task()");        // this should theoretically never be called
 }
 
+/**
+ * @brief Initializes the hardware timer used for the LCD backlight timeout.
+ */
 static void init_timeout() {
     if (_TESTING) ESP_LOGI(TAG, "In init_timeout()");
     gptimer_config_t timer_config = {};
@@ -145,6 +175,9 @@ static void init_timeout() {
     ESP_ERROR_CHECK(gptimer_start(timer_handle));
 }
 
+/**
+ * @brief Initializes the LEDC peripheral for LCD backlight PWM control.
+ */
 static void init_led_pwm() {
     if (_TESTING) ESP_LOGI(TAG, "In init_led_pwm()");
 
@@ -172,13 +205,26 @@ static void init_led_pwm() {
 
     ESP_ERROR_CHECK(ledc_channel_config(&channel_config));
 }
-/*
-A helper function for lvgl_flush_cb
-*/
+
+/**
+ * @brief Helper function for lvgl_flush_cb to swap bytes.
+ * 
+ * @param x 16-bit integer to byte-swap.
+ * @return uint16_t Byte-swapped 16-bit integer.
+ */
 static inline uint16_t bswap16(uint16_t x) {
     return (x << 8) | (x >> 8);
 }
 
+/**
+ * @brief LVGL display flush callback.
+ * 
+ * @details Pushes a rendered image buffer to the display over SPI.
+ * 
+ * @param disp LVGL display object.
+ * @param area Area of the display to update.
+ * @param color_map Pointer to the pixel color data.
+ */
 static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *color_map) {
     
     uint16_t *pixels = (uint16_t *)color_map;
@@ -195,10 +241,18 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *co
     lv_display_flush_ready(disp);
 }
 
+/**
+ * @brief LVGL tick callback providing system time.
+ * 
+ * @return uint32_t Current system time in milliseconds.
+ */
 static uint32_t lv_tick_cb(void) {
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
+/**
+ * @brief Initializes the LVGL graphics library and display buffers.
+ */
 static void init_lvgl(void) {
     if (_TESTING) ESP_LOGI(TAG, "In init_lvgl()");
     lv_init();
@@ -209,8 +263,20 @@ static void init_lvgl(void) {
     lv_display_t *disp = lv_display_create(LCD_H_RES, LCD_V_RES);
     lv_display_set_buffers(disp, buf1, buf2, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(disp, lvgl_flush_cb);
+
+    // // Allocate DMA-capable memory dynamically instead of consuming static BSS
+    // size_t buf_size = LCD_H_RES * LINES_PER_DMA * sizeof(lv_color_t);
+    // lv_color_t *buf1 = (lv_color_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    // lv_color_t *buf2 = (lv_color_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+
+    // lv_display_t *disp = lv_display_create(LCD_H_RES, LCD_V_RES);
+    // lv_display_set_buffers(disp, buf1, buf2, buf_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
+    // lv_display_set_flush_cb(disp, lvgl_flush_cb);
 }
 
+/**
+ * @brief Initializes the SPI bus and ST7796 LCD panel driver.
+ */
 static void init_st7796(void) {
     if (_TESTING) ESP_LOGI(TAG, "In init_st7796()");
     spi_bus_config_t buscfg = {};
@@ -249,7 +315,9 @@ static void init_st7796(void) {
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
 }
 
-
+/**
+ * @brief Initializes the rotary encoder hardware and event queues.
+ */
 static void init_encoder(void) {
     if (_TESTING) ESP_LOGI(TAG, "In init_encoder()");
 
@@ -274,8 +342,10 @@ static void init_encoder(void) {
     if (_TESTING) ESP_LOGI(TAG, "Rotary encoder was successfully initialized.");
 }
 
-// Abstract function to reset the LCD auto-dimming timer
-// init_led_pwm() must be called before this function in order to initialize timer_handle
+/**
+ * @brief Resets the LCD auto-dimming timer and restores brightness.
+ * @note init_led_pwm() must be called before this function to initialize timer_handle.
+ */
 void reset_display_timeout() {
     // Reset timer for lcd auto-timeout
     ESP_ERROR_CHECK(gptimer_set_raw_count(timer_handle, 0));
@@ -285,6 +355,11 @@ void reset_display_timeout() {
     }
 }
 
+/**
+ * @brief Loads and transitions to a new system GUI state.
+ * 
+ * @param new_state The target system state (e.g., GUI_BOOT, GUI_MAIN, GUI_ECG).
+ */
 void load_system_state(system_state_t new_state) {
     ESP_LOGI(TAG, "In system state. Old state: %d. New state: %d", system_state, new_state);
 
@@ -314,48 +389,9 @@ void load_system_state(system_state_t new_state) {
 
 }
 
-// ------------------------------
-// Test Screen
-// ------------------------------
-/*
-A test function that should fill the display in the following order: red, green, blue, red, green, blue.
-The LVGL demo benchmark will then be run.
-The demo functionality must be enabled in lv_conf.h.
-*/
-// static void show_test_animation(lv_obj_t *scr) {
-//     if (_TESTING) ESP_LOGI(TAG, "In show_test_animation()");
-
-//     set_led_pwm(100);
-
-//     lv_obj_set_style_bg_color(scr, lv_color_hex(0xFF0000), 0);      //red
-//     lv_timer_handler();
-
-//     vTaskDelay(pdMS_TO_TICKS(1000));
-//     lv_obj_set_style_bg_color(scr, lv_color_hex(0x00FF00), 0);      //green
-//     lv_timer_handler();
-
-//     vTaskDelay(pdMS_TO_TICKS(1000));
-//     lv_obj_set_style_bg_color(scr, lv_color_hex(0x0000FF), 0);      //blue
-//     lv_timer_handler();
-
-//     vTaskDelay(pdMS_TO_TICKS(1000));
-//     lv_obj_set_style_bg_color(scr, lv_color_make(255, 0, 0), 0);      //red
-//     lv_timer_handler();
-
-//     vTaskDelay(pdMS_TO_TICKS(1000));
-//     lv_obj_set_style_bg_color(scr, lv_color_make(0, 255, 0), 0);      //green
-//     lv_timer_handler();
-
-//     vTaskDelay(pdMS_TO_TICKS(1000));
-//     lv_obj_set_style_bg_color(scr, lv_color_make(0, 0, 255), 0);      //blue
-//     lv_timer_handler();    
-
-//     vTaskDelay(pdMS_TO_TICKS(1000));
-
-//     // Start benchmark
-//     lv_demo_benchmark();
-// }
-
+/**
+ * @brief Orchestrates the complete initialization of the LCD subsystem.
+ */
 void init_lcd() {
     if (_TESTING) ESP_LOGI(TAG, "In init_lcd().");
 
@@ -368,13 +404,17 @@ void init_lcd() {
     if (_TESTING) ESP_LOGI(TAG, "init_lcd() was successfully completed.");
 }
 
+/**
+ * @brief Fetches ECG samples from the queue and updates the waveform plot.
+ */
 static void plot_ecg_data(void) {
     ecg_sample_t sample_buffer;
-    int32_t samples[20];
+    #define MAX_DRAIN_SAMPLES 25
+    int32_t samples[MAX_DRAIN_SAMPLES];
     uint16_t count = 0;
     
-    // Dynamically drain the queue to prevent LVGL UI from falling behind
-    while (count < 20 && xQueueReceive(ecg_sample_queue, &sample_buffer, 0) == pdTRUE) {
+    // Drain enough samples to easily catch up after heavy ML inference preemptions
+    while (count < MAX_DRAIN_SAMPLES && xQueueReceive(ecg_sample_queue, &sample_buffer, 0) == pdTRUE) {
         samples[count++] = sample_buffer.ch1;
     }
     
@@ -384,6 +424,11 @@ static void plot_ecg_data(void) {
     }
 }
 
+/**
+ * @brief Renders the ML prediction output to the GUI.
+ * 
+ * @param output_buffer Pointer to the array of prediction probabilities.
+ */
 static void render_prediction(float* output_buffer) {
     uint8_t classified_idx = get_prediction_idx(output_buffer, 3);   // OUTPUT_SIZE (see tflm_wrapper.cc)
     const char *output_class = output_classes[classified_idx];
@@ -391,16 +436,11 @@ static void render_prediction(float* output_buffer) {
 }
 
 
-// ------------------------------
-// Main LVGL task
-// ------------------------------
-static QueueHandle_t lvgl_cmd_queue = NULL;
-typedef enum {
-    LVGL_CMD_SHOW_BOOT,
-    LVGL_CMD_SHOW_MAIN,
-    LVGL_CMD_SHOW_ECG,
-    LVGL_CMD_RUN_WAVEFORM_TEST
-} lvgl_cmd_t;
+/**
+ * @brief Main LVGL FreeRTOS task handling GUI rendering and UI updates.
+ * 
+ * @param pvParameters Task parameters (unused).
+ */
 void lvgl_task(void *pvParameters) {
     if (_TESTING) ESP_LOGI(TAG, "Started lvgl_task()");
 
@@ -448,9 +488,6 @@ void lvgl_task(void *pvParameters) {
                     case LVGL_CMD_SHOW_ECG:
                         show_ECG_screen();
                         break;
-                    case LVGL_CMD_RUN_WAVEFORM_TEST:
-                        test_waveform_plot(get_waveform_ptr());
-                        break;
                     default:
                         break;
                 }
@@ -489,6 +526,9 @@ void lvgl_task(void *pvParameters) {
 
 static uint8_t enc_prev_state = 0;
 static bool enc_init = true;
+/**
+ * @brief Polls the rotary encoder GPIO pins to determine position changes.
+ */
 static void poll_gpio() {
 
     static const int8_t transition_table[16] = {
@@ -526,10 +566,14 @@ static void poll_gpio() {
     }
 }
 
-/*
-Turn the system to deep sleep (standby mode).
-If the system was just powered on, then 
-*/
+/**
+ * @brief Puts the system into deep sleep (standby mode).
+ * 
+ * @details If the system was just powered on, configures the appropriate 
+ *          wake stubs before halting execution.
+ * 
+ * @param is_sys_on True if the system was actively on, false if initial boot.
+ */
 void start_deep_sleep(bool is_sys_on) {
     if (_TESTING) ESP_LOGI(TAG, "In start_deep_sleep()");
     if (esp_sleep_is_valid_wakeup_gpio(POWER_BTN_PIN))      // check if GPIO3 can enable ext0 wakeup
@@ -547,14 +591,22 @@ void start_deep_sleep(bool is_sys_on) {
     }
 }
 
+/**
+ * @brief Polls the power button state to trigger sleep mode if pressed.
+ */
 static void poll_power_button() {
-    uint8_t is_pulled_high = gpio_get_level(POWER_BTN_PIN);
+    uint8_t is_pulled_low = !gpio_get_level(POWER_BTN_PIN);
 
-    if (!is_pulled_high) {      // active-low button
+    if (is_pulled_low) {      // active-low button
         start_deep_sleep(true);
     }
 }
 
+/**
+ * @brief FreeRTOS task responsible for handling hardware inputs (encoder, buttons).
+ * 
+ * @param pvParameters Task parameters (unused).
+ */
 void input_task(void *pvParameters) {
     if (_TESTING) ESP_LOGI(TAG, "Started input_task()");
 
@@ -584,6 +636,7 @@ void input_task(void *pvParameters) {
             }
     
             // Print the type of event that occurred
+            // Can be removed
             switch (enc_event.type) {
                 case RE_ET_BTN_PRESSED:
                     if (_TESTING) ESP_LOGI(TAG, "Button pressed");
@@ -610,13 +663,13 @@ void input_task(void *pvParameters) {
     }
 }
 
-// -------------------
-// GUI Task
-// -------------------
+/**
+ * @brief FreeRTOS task managing high-level GUI state transitions.
+ * 
+ * @param pvParameters Task parameters (unused).
+ */
 void gui_task(void *pvParameters) {
     if (_TESTING) ESP_LOGI(TAG, "Started gui_task()");
-
-    // gui_task_handle = get_gui_task_handle();
 
     system_state = GUI_BOOT;
 
@@ -644,26 +697,9 @@ void gui_task(void *pvParameters) {
                 cmd = LVGL_CMD_SHOW_ECG;
                 xQueueSend(lvgl_cmd_queue, &cmd, portMAX_DELAY);
                 break;
-            case GUI_DEMO:      // not implemented but fully functional
-                cmd = LVGL_CMD_RUN_WAVEFORM_TEST;
-                xQueueSend(lvgl_cmd_queue, &cmd, portMAX_DELAY);
             case GUI_IDLE:
             default:
                 break;
         }
     }
-}
-
-// Show ADS1293 error message in a message box on the display
-// TODO: Implement fucntionality
-void show_ecg_error_message(const char *text) {
-    if (!INCLUDE_LCD) {
-        return;
-    }
-
-    lv_obj_t *error_box;
-    error_box = lv_msgbox_create(lv_screen_active());
-    error_box = lv_msgbox_add_text(error_box, text);
-
-    lv_timer_handler();     // update active screen
 }

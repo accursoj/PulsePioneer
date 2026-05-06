@@ -1,3 +1,11 @@
+/**
+ * @file tflm_wrapper.cc
+ * @brief TensorFlow Lite Micro (TFLM) integration and inference task.
+ *
+ * This file contains the setup and execution of the TFLM interpreter,
+ * memory allocation for the model and tensor arena in PSRAM, and the
+ * FreeRTOS task that performs continuous ML inference on ECG data.
+ */
 // TF_LITE_STATIC_MEMORY must be defined prior to any tensorflow library inclusions
 // This flag must be defined in order to align with the configuration of structs
 //  within the tesnorflow library. Otherwise, input->data.f will return null.
@@ -26,28 +34,41 @@
 #include "models.h"
 
 
+/** @brief Pointer to the TensorFlow Lite model */
 static const tflite::Model* model = nullptr;
+/** @brief Pointer to the TFLM interpreter */
 static tflite::MicroInterpreter* interpreter = nullptr;
+/** @brief Pointer to the model's input tensor */
 static TfLiteTensor* input = nullptr;
+/** @brief Pointer to the model's output tensor */
 static TfLiteTensor* output = nullptr;
+/** @brief Pointer to the model data allocated in PSRAM */
 static uint8_t *model_psram = nullptr;
+/** @brief Pointer to the tensor arena allocated in PSRAM */
 static uint8_t *tensor_arena_psram = nullptr;
 
-static constexpr int kTensorArenaSize = 512 * 1024;    // minimum 350kB
+/** @brief Required size for the tensor arena (minimum 350kB, set to 512KB) */
+static constexpr int kTensorArenaSize = 512 * 1024;
 
+/** @brief Task watchdog timer configuration */
 static esp_task_wdt_config_t wdt_config = {};
 
+/** @brief FreeRTOS queue for sending model predictions to the GUI */
 QueueHandle_t model_output_queue = NULL;
 
+/** @brief String labels corresponding to the output classifications */
 const char *output_classes[OUTPUT_SIZE] = {"AFIB  ", "NORMAL", "VFIB  "};   // extra spaces keep padding on the data bar consistent
 
 static const char *TAG = "tflm_wrapper.cc";
 
-
 /**
- * ============================================================
- *                    TFLM INIT
- * ============================================================
+ * @brief Initializes the TensorFlow Lite Micro framework.
+ *
+ * @details Allocates memory for the model and tensor arena in PSRAM,
+ *          registers necessary operations, and allocates tensors.
+ *          Also initializes the FreeRTOS queue for model output.
+ *
+ * @return 1 if initialization was successful, 0 otherwise.
  */
 
 int tflm_init(void) {
@@ -89,12 +110,13 @@ int tflm_init(void) {
     resolver.AddReshape();
     resolver.AddSoftmax();
 
-    // Allocate Arena in PSRAM
+    // Allocate tensor arena in PSRAM
     tensor_arena_psram = (uint8_t*)heap_caps_aligned_alloc(
         16,
         kTensorArenaSize,
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
     );
+    // Catch invalid tensor arena allocation in PSRAM
     if (!tensor_arena_psram) {
         ESP_LOGE(TAG, "tensor_arena_psram could not be allocated");
         return 0;
@@ -109,6 +131,7 @@ int tflm_init(void) {
     );
     interpreter = &static_interpreter;
 
+    // Catch invalid interpreter tensor allocation
     if (interpreter->AllocateTensors() != kTfLiteOk) {
         ESP_LOGE(TAG, "AllocateTensors() failed!");
         return 0;
@@ -117,11 +140,14 @@ int tflm_init(void) {
     input = interpreter->input(0);
     output = interpreter->output(0);
 
+    // Catch invalid input and input data pointers
     if (!input || !input->data.f) {
         ESP_LOGE(TAG, "input->data.f is null.");
         return 0;
     }
 
+    // Check that this log prints a valid address and not just 0x00
+    // If it is 0x00/null then model inference will be invalid
     ESP_LOGI(TAG, "Input pointer address: %p", input->data.f);
 
     // Load model output queue to be used in gui.c
@@ -129,6 +155,7 @@ int tflm_init(void) {
     if (!model_output_queue) {
         model_output_queue = xQueueCreate(5, OUTPUT_SIZE * sizeof(float));
     }
+    // Catch invalid output queue allocation
     if (!model_output_queue) {
         ESP_LOGE(TAG, "Failed to create model_output_queue.");
         return 0;
@@ -140,9 +167,12 @@ int tflm_init(void) {
 }
 
 /**
- * @brief Create a custom task watchdog timer.
- * Allows the task watchdog timer to be reconfigured and extended so that reasonable timeouts from
- *  resource-intensive tasks do not cause system panic (and crashes).
+ * @brief Configures a custom task watchdog timer (TWDT).
+ * 
+ * @details Allows the task watchdog timer to be reconfigured and extended so that
+ *          reasonable timeouts from resource-intensive tasks do not cause system panic (and crashes).
+ *
+ * @return true if successfully configured.
  */
 static bool set_wdt() {
     wdt_config.timeout_ms = 120000;     // 2 minutes
@@ -154,6 +184,13 @@ static bool set_wdt() {
     return true;
 }
 
+/**
+ * @brief Finds the index of the maximum value in an array.
+ *
+ * @param output_buffer Pointer to the array of float predictions.
+ * @param output_buffer_len Number of elements in the buffer.
+ * @return uint8_t Index of the maximum value (predicted class).
+ */
 uint8_t get_prediction_idx(float *output_buffer, uint8_t output_buffer_len) {
     uint8_t max_val_idx = 0;
 
@@ -166,6 +203,15 @@ uint8_t get_prediction_idx(float *output_buffer, uint8_t output_buffer_len) {
     return max_val_idx;
 }
 
+/**
+ * @brief FreeRTOS task for running continuous model inference.
+ *
+ * @details This task waits for the ECG plot to be calibrated, then continuously
+ *          pulls raw data from the ECG queue, preprocesses it, runs TFLM inference,
+ *          and sends the prediction results to the output queue for the GUI.
+ *
+ * @param pvParameters Task parameters (unused).
+ */
 void inference_task(void *pvParameters) {
     // Check if the custom TWDT has been initialized
     if (!set_wdt()) {

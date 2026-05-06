@@ -12,6 +12,9 @@ extern "C" {
 
 #include <../lvgl/lvgl.h>
 
+#define WAVEFORM_CHART_NUM_POINTS 125 // (for decim=128) //500 (for decim=32)
+
+
 extern lv_obj_t *scr_container;
 extern lv_obj_t *main_scr;
 extern lv_obj_t *ecg_scr;
